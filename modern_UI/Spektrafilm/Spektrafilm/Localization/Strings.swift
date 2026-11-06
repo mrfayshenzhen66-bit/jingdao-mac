@@ -115,6 +115,15 @@ enum S: String, CaseIterable, Sendable {
     case clipCopyHelp, clipPasteHelp
     case clipSync, clipSyncTo, clipSyncHelp, clipSyncDone, clipSyncResult, clipSyncNothing
 
+    // MARK: personal film and paper combinations
+    case sectionFilmPaperPresets, combinationRemember, combinationRememberCaption
+    case combinationScope, combinationChoose, combinationEmpty, combinationSave
+    case combinationRename, combinationDelete, combinationName, combinationCancel
+    case combinationSaveAction, combinationDeleteQuestion, combinationDeleteCaption
+    case combinationEmptyName, combinationDuplicateName, combinationMissing
+    case combinationApplyFailed, combinationStoreProblem, combinationSaveFailed
+    case combinationApplyHelp, combinationEmptyCanvas
+
     // MARK: Settings as pages, and the Agents page (RFC-026)
     case setTabGeneral, setTabRendering, setTabMemory, setTabDiagnostics, setTabAgents
     case setInterface, setScale, setScaleCaption
@@ -184,6 +193,28 @@ extension S {
         case .setResetLayout: "Reset All Layout"
         case .setResetLayoutCaption: "Panel widths, section heights and which sections are open, back to the drawing."
         case .sectionClipboard: "Settings Clipboard"
+        case .sectionFilmPaperPresets: "Combination Presets"
+        case .combinationRemember: "Use last combination for new photos"
+        case .combinationRememberCaption: "Edited photos keep their own settings."
+        case .combinationScope: "Film, paper, output mode and EDR only."
+        case .combinationChoose: "Choose a combination"
+        case .combinationEmpty: "No saved combinations yet."
+        case .combinationSave: "Save Current Combination"
+        case .combinationRename: "Rename…"
+        case .combinationDelete: "Delete"
+        case .combinationName: "Preset name"
+        case .combinationCancel: "Cancel"
+        case .combinationSaveAction: "Save"
+        case .combinationDeleteQuestion: "Delete this combination?"
+        case .combinationDeleteCaption: "The preset “%@” will be removed. Photo edits are kept."
+        case .combinationEmptyName: "Enter a name for the combination."
+        case .combinationDuplicateName: "This name is already used. Choose another name."
+        case .combinationMissing: "This combination no longer exists."
+        case .combinationApplyFailed: "This combination cannot be applied right now."
+        case .combinationStoreProblem: "Some combination settings could not be read or saved."
+        case .combinationSaveFailed: "The combination could not be saved. Please try again."
+        case .combinationApplyHelp: "Apply a saved film, paper, output mode and EDR combination to the current photo."
+        case .combinationEmptyCanvas: "Choose a combination for the next new photo."
         case .clipSync: "Sync"
         case .clipSyncTo: "Sync to %d"
         case .clipSyncHelp: "Apply the ticked groups from the current photo to the other selected photos. Crop and Post-Dev adjustments are not included."
@@ -507,6 +538,28 @@ extension S {
         case .setResetLayout: "重置全部布局"
         case .setResetLayoutCaption: "将面板宽度、各部分高度与展开状态恢复为默认。"
         case .sectionClipboard: "设置剪贴板"
+        case .sectionFilmPaperPresets: "组合预设"
+        case .combinationRemember: "新照片沿用上次组合"
+        case .combinationRememberCaption: "已有编辑的照片保留原设置。"
+        case .combinationScope: "仅包含胶片、相纸、输出方式与 EDR。"
+        case .combinationChoose: "选择组合"
+        case .combinationEmpty: "还没有保存组合。"
+        case .combinationSave: "保存当前组合"
+        case .combinationRename: "重命名…"
+        case .combinationDelete: "删除"
+        case .combinationName: "预设名称"
+        case .combinationCancel: "取消"
+        case .combinationSaveAction: "保存"
+        case .combinationDeleteQuestion: "删除此组合？"
+        case .combinationDeleteCaption: "将删除预设“%@”，照片的编辑设置会保留。"
+        case .combinationEmptyName: "请输入组合名称。"
+        case .combinationDuplicateName: "此名称已被使用，请换一个名称。"
+        case .combinationMissing: "此组合已不存在。"
+        case .combinationApplyFailed: "当前无法应用此组合。"
+        case .combinationStoreProblem: "部分组合设置无法读取或保存。"
+        case .combinationSaveFailed: "组合保存失败，请重试。"
+        case .combinationApplyHelp: "将保存的胶片、相纸、输出方式与 EDR 组合应用到当前照片。"
+        case .combinationEmptyCanvas: "选择一个组合，供下一张新照片使用。"
         case .clipSync: "同步"
         case .clipSyncTo: "同步到 %d 张"
         case .clipSyncHelp: "将当前照片中勾选的项目应用到其他选中的照片。不包含裁剪和显影后调整。"
@@ -568,7 +621,7 @@ extension S {
         case .sectionWhiteBalance: "白平衡"
         case .sectionExposure: "曝光"
         case .sectionCurve: "曲线"
-        case .sectionColorBalance: "色彩平衡"
+        case .sectionColorBalance: "色彩平衡 · 色轮"
 
         // Camera
         case .cameraMetering: "测光方式"

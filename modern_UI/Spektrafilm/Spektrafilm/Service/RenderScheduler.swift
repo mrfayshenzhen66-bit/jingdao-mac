@@ -7,8 +7,10 @@
 //  a single loop that, whenever they differ, waits a short debounce, sends
 //  one delta for the whole difference, and applies the result only if no
 //  newer frame was opened in the meantime (a generation counter). Shoot-layer
-//  edits, which re-run the film side, get a longer debounce than print-layer
-//  edits, which reprint from the cached negative.
+//  edits, which re-run the film side, get a slightly longer debounce than
+//  print-layer edits, which reprint from the cached negative; both are short,
+//  because the single-flight loop already coalesces whatever arrives while a
+//  render runs.
 
 import Foundation
 
@@ -31,6 +33,11 @@ final class RenderScheduler {
     /// was (`EngineMessage`).
     var onError: (@MainActor (Error) -> Void)?
     var onBusy: (@MainActor (Bool) -> Void)?
+
+    /// The wait before a delta is sent: shoot-layer edits re-run the film
+    /// side, print-layer edits reprint from the cached negative.
+    nonisolated static let shootSettleMs = 30
+    nonisolated static let printSettleMs = 16
 
     init(client: EngineClient, log: Log = .shared) {
         self.client = client
@@ -97,7 +104,15 @@ final class RenderScheduler {
             let (delta, layers) = wanted.delta(from: sent)
             if delta.isEmpty { return }
             let shoot = layers.contains(.shoot)
-            try? await Task.sleep(for: .milliseconds(shoot ? 220 : 40))
+            // Only long enough to gather the events of one frame or two.
+            // The coalescing that matters is the loop itself: while a render
+            // runs, every tick lands in `wanted` and the next pass sends the
+            // whole difference at once. It used to be 220 ms (shoot) and 40 ms
+            // (print) on top of the render, which held a film-side drag to
+            // ~2.5 updates a second against a ~175 ms render (measured
+            // 2026-11-03, M4, 2560 px preview).
+            try? await Task.sleep(for: .milliseconds(shoot ? RenderScheduler.shootSettleMs
+                                                         : RenderScheduler.printSettleMs))
             if Task.isCancelled || gen != generation {
                 // A render that was never issued: the edit it was for has been
                 // superseded before the engine saw anything. Recorded at

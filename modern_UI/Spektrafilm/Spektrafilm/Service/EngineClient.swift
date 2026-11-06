@@ -177,6 +177,42 @@ actor EngineClient {
         set { handles.session = newValue }
     }
     private var sessionID: String?
+
+    /// The render the engine is inside right now, readable from outside the
+    /// actor. While `spk_render`/`spk_reprint` runs this actor is blocked in C,
+    /// so a cancel sent *through* the actor would queue behind the very render
+    /// it is meant to stop. The pointer is set only around that call, and only
+    /// this actor frees a session — never while it is inside one — so under the
+    /// lock a non-nil pointer is a live session.
+    private final class InFlight: @unchecked Sendable {
+        private let lock = NSLock()
+        private var session: OpaquePointer?
+        private var tier: String?
+        func begin(session: OpaquePointer, tier: String) {
+            lock.lock(); self.session = session; self.tier = tier; lock.unlock()
+        }
+        func end() {
+            lock.lock(); session = nil; tier = nil; lock.unlock()
+        }
+        /// `spk_cancel` is documented safe from another thread; the engine
+        /// resets the flag when the next render starts, so a cancel that lands
+        /// as this one finishes cannot leak into the next.
+        func cancel(tier wanted: String) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            guard let session, tier == wanted else { return false }
+            spk_cancel(session, nil)
+            return true
+        }
+    }
+    private let inFlight = InFlight()
+
+    /// Stop a full-tier render the engine is running, so an edit waiting
+    /// behind it on this actor runs now instead of after a 1–2 s native
+    /// render it would throw away. Does nothing to a live render. The render
+    /// throws `ClientError.cancelled` at the next node boundary.
+    @discardableResult
+    nonisolated func cancelFullRender() -> Bool { inFlight.cancel(tier: "full") }
+
     private let device: MTLDevice
     /// Where this client's records go (RFC-016 §3 `engine`). The app's log by
     /// default; a `Session` that was handed a `Diagnostics` passes that one's,
@@ -287,8 +323,11 @@ actor EngineClient {
     enum ClientError: Error, CustomStringConvertible {
         case noResources(String), notRunning, engine(String), rpc(ServiceError)
         case badResponse(String), needsRenderPath(Method), needsFrame
+        /// `cancelFullRender()` stopped the render: not a failure.
+        case cancelled
         var description: String {
             switch self {
+            case .cancelled: "the render was cancelled"
             case .noResources(let p): "the engine's resources are missing at \(p)"
             case .notRunning: "the render engine is not running"
             case .engine(let m): m
@@ -411,9 +450,14 @@ actor EngineClient {
     /// `RenderEngine.export` reuses the working-resolution negative when one
     /// is warm and renders the film side when it is not, which is exactly
     /// `spk_reprint`'s own contract.
-    func render(_ method: Method, _ request: RenderRequest) async throws -> RenderOutcome {
+    ///
+    /// `cancellable` marks the canvas's own native render, the only one
+    /// `cancelFullRender()` may stop. An export or a pair's layers at the full
+    /// tier are never cancellable: the user is waiting for exactly that file.
+    func render(_ method: Method, _ request: RenderRequest,
+                cancellable: Bool = false) async throws -> RenderOutcome {
         if state != .running { try start() }
-        return try renderTexture(method, request)
+        return try renderTexture(method, request, cancellable: cancellable)
     }
 
     // MARK: - the baked print LUTs
@@ -664,7 +708,8 @@ actor EngineClient {
         return decoded
     }
 
-    private func renderTexture(_ method: Method, _ request: RenderRequest) throws -> RenderOutcome {
+    private func renderTexture(_ method: Method, _ request: RenderRequest,
+                               cancellable: Bool = false) throws -> RenderOutcome {
         guard let session else { throw ClientError.notRunning }
         // A `params_delta` on a render is applied first, which is what the
         // wire's `reprint(params_delta:)` meant.
@@ -683,12 +728,17 @@ actor EngineClient {
         // `preview_render` forces the film side to run; `reprint` reuses the
         // cached negative. That is the same distinction the two engine
         // entry points make.
+        if cancellable { inFlight.begin(session: session, tier: request.tier) }
         let status = request.tier.withCString { tier in
             method == .previewRender
                 ? spk_render(session, tier, &result)
                 : spk_reprint(session, tier, &result)
         }
-        guard status == SPK_OK else { throw ClientError.engine(lastError()) }
+        inFlight.end()
+        guard status == SPK_OK else {
+            if status == SPK_ERR_CANCELLED { throw ClientError.cancelled }
+            throw ClientError.engine(lastError())
+        }
 
         // `+1`, per spk_engine.h: the engine handed over its only reference and
         // ARC owns it from here. `takeUnretainedValue` would free the pixels

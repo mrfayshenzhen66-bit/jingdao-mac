@@ -29,10 +29,14 @@ enum ParametersTab: String, CaseIterable, Identifiable {
 
 struct RightPanel: View {
     @Bindable var session: Session
+    @State private var panelOrder = PanelOrderStore.shared
+    @State private var showingOrder = false
     @AppStorage(Session.uiKey + "parametersTab") private var tabRaw = ParametersTab.preDev.rawValue
     private var tab: ParametersTab { ParametersTab(rawValue: tabRaw) ?? .preDev }
+    private var orderGroup: PanelOrderGroup { tab == .preDev ? .preDev : .postDev }
+    private var railFocus: WorkflowRail { tab == .preDev ? .preDev : .postDev }
 
-    /// The tab's sections, in order. Built a statement at a time: as one
+    /// The tab's default sections, before its saved display order. As one
     /// expression it was more than the type checker would finish on the CI
     /// runner (2026-10-03).
     private var sections: [(String, AnyView)] {
@@ -52,17 +56,19 @@ struct RightPanel: View {
             s.append(("exposure2", AnyView(ExposureSection(session: session))))
             s.append(("curve", AnyView(CurveSection(session: session))))
             s.append(("colorbalance", AnyView(ColorBalanceSection(session: session))))
+            s.append(("hsl", AnyView(HSLSection(session: session))))
             // Withdrawn while the mask system is redesigned; the section
             // itself is intact (`FeatureFlags.masks`).
             if FeatureFlags.masks { s.append(("masks", AnyView(MasksSection(session: session)))) }
         }
-        return s
+        return panelOrder.arranged(s, in: orderGroup)
     }
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Hairline()
+            ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 0) {
                     let sections = sections
@@ -70,13 +76,22 @@ struct RightPanel: View {
                     // handle on the section above it.
                     ForEach(Array(sections.enumerated()), id: \.element.0) { index, entry in
                         if index > 0 { SectionDivider(above: sections[index - 1].0) }
-                        entry.1
+                        entry.1.workflowEntry(entry.0)
                     }
                 }
+            }
+            .workflowFocus(railFocus, proxy: proxy)
             }
         }
         .environment(\.railSliderMetrics, .parameters)
         .railCard()
+        .sheet(isPresented: $showingOrder) {
+            PanelOrderManagerSheet(initialGroup: orderGroup, store: panelOrder)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .layoutReset)) { _ in
+            panelOrder.reset(.preDev)
+            panelOrder.reset(.postDev)
+        }
     }
 
     /// The rail's name, and under it the Pre-Dev / Post-Dev switch (1.2.2).
@@ -90,15 +105,22 @@ struct RightPanel: View {
     /// language's titles at any interface scale.
     private var header: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(L(.railParameters))
-                .font(Theme.Font.railTitle)
-                .foregroundStyle(Theme.text)
-                .fixedSize()
+            HStack {
+                Text(L(.railParameters))
+                    .font(Theme.Font.railTitle)
+                    .foregroundStyle(Theme.text)
+                    .fixedSize()
+                Spacer(minLength: 0)
+            }
                 .frame(height: Theme.Metric.panelHeaderHeight)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 // The same drag surface the left rail's header is: with the
                 // titlebar hidden this row is where one would be.
                 .background(WindowDragHandle())
+                .contentShape(Rectangle())
+                .contextMenu {
+                    Button(L("Show Edit Panels…", zh: "显示编辑面板…")) { showingOrder = true }
+                }
             SegmentedSwitch(options: ParametersTab.allCases,
                             selection: Binding(get: { tab }, set: { tabRaw = $0.rawValue }),
                             title: { $0.title },

@@ -340,6 +340,37 @@ public:
 
     // `Tap.RGB_IN` -> `Tap.CMY_FILM`. `out` is the developed negative.
     bool run_film(const Image& in, Image& out, Progress* progress, std::string& error);
+
+    // 景到 personal build (2026-11-05): the film side's *post-blur* plane --
+    // the exposed, lens-blurred, halated frame `film_blurs` hands to
+    // `film_log_and_curves` -- kept between live renders so a develop-side
+    // edit (grain, DIR couplers, curve gamma) does not redo upsample and
+    // halation. Owned by the session's live tier, so a tier reset drops it.
+    //
+    // `key` is everything upstream of the plane except the exposure gain; the
+    // gain is stored separately because, when nothing nonlinear sits between
+    // `node_exposure` and the plane (`exposure_rescalable`), the plane is
+    // linear in it and a new exposure is one multiply of the cached plane.
+    // The cached plane is only ever written by a fresh run, never by a
+    // rescale, so rounding cannot accumulate across a drag.
+    struct FilmCache {
+        bool valid = false;
+        std::string key;
+        bool rescalable = false;
+        double exposure_ev = 0.0;
+        Image plane;
+    };
+    // `run_film` with that cache. `key` must cover every input of the stages
+    // up to `film_blurs` other than `camera.exposure_compensation_ev`
+    // (`engine.cpp` builds it from the wire fields and the tier image).
+    bool run_film_cached(const Image& in, Image& out, Progress* progress, FilmCache& cache,
+                         const std::string& key, std::string& error);
+    // True when every node between the exposure gain and the post-blur plane
+    // is linear in its input: no highlight boost, no headroom lift, no
+    // overscan canvas, no date imprint.
+    bool exposure_rescalable() const;
+    // Whether this configuration can use the cache at all.
+    bool film_cache_usable() const;
     // `Tap.CMY_FILM` -> `Tap.RGB_OUT`.
     bool run_print(const Image& cmy, Image& out, Progress* progress, std::string& error);
 

@@ -111,6 +111,11 @@ final class Renderer: NSObject {
     let arena: MemoryArena
     let scratchPool: Bool
     private let layer2Pipeline: MTLComputePipelineState
+    /// 景到 HSL, run after Layer 2 when any band is edited. Optional so a
+    /// library without the kernel still grades everything else.
+    private let hslPipeline: MTLComputePipelineState?
+    /// The canvas's own Layer 2 output when HSL follows it.
+    private var hslScratch: MTLTexture?
     private let transformPipeline: MTLComputePipelineState
     private let histogramPipeline: MTLComputePipelineState
     private let geometryPipeline: MTLComputePipelineState
@@ -371,6 +376,8 @@ final class Renderer: NSObject {
     /// and what `logicalSize(forSource:)` turns into the viewport's units.
     private(set) var sourceSize: CGSize?
     var layer2 = Layer2Uniforms() { didSet { layer2Dirty = true } }
+    /// The canvas's HSL; neutral when the grade is off or the frame is a pair.
+    var hsl = HSLAdjustments() { didSet { if oldValue != hsl { layer2Dirty = true; needsDraw?() } } }
     /// RFC-028: asked at encode time, of the texture being encoded. True for
     /// a Digital Intermediate, whose pixels are Cineon codes: the layer reads
     /// them through the DI view (`CineonLUT`) first, and Post-Dev then works
@@ -436,6 +443,7 @@ final class Renderer: NSObject {
               let fs = lib.makeFunction(name: "canvasFragment") else { return nil }
         do {
             layer2Pipeline = try device.makeComputePipelineState(function: l2)
+            hslPipeline = HSLKernel.makePipeline(device: device)
             transformPipeline = try device.makeComputePipelineState(function: xform)
             histogramPipeline = try device.makeComputePipelineState(function: hist)
             geometryPipeline = try device.makeComputePipelineState(function: geo)
@@ -583,7 +591,40 @@ final class Renderer: NSObject {
         return device.makeTexture(descriptor: d)
     }()
 
-    private func encodeLayer2(_ cb: MTLCommandBuffer, src: MTLTexture, dst: MTLTexture) {
+    /// Layer 2, then HSL when `hsl` (default: the canvas's) has an edited
+    /// band. Offscreen callers pass their own scratch so they never share the
+    /// canvas's texture across command buffers.
+    private func encodeLayer2(_ cb: MTLCommandBuffer, src: MTLTexture, dst: MTLTexture,
+                              hsl override: HSLAdjustments? = nil, scratch offscreen: MTLTexture? = nil) {
+        let bands = override ?? hsl
+        guard !bands.isNeutral, layer2.enabled != 0, let hslPipeline else {
+            encodeLayer2Pass(cb, src: src, dst: dst); return
+        }
+        let scratch: MTLTexture
+        if let offscreen { scratch = offscreen }
+        else if let cached = hslScratch, cached.width == dst.width, cached.height == dst.height,
+                cached.pixelFormat == dst.pixelFormat { scratch = cached }
+        else {
+            guard let made = store.makeWritable(width: dst.width, height: dst.height, format: dst.pixelFormat) else {
+                encodeLayer2Pass(cb, src: src, dst: dst); return
+            }
+            hslScratch = made; scratch = made
+        }
+        encodeLayer2Pass(cb, src: src, dst: scratch)
+        guard let enc = cb.makeComputeCommandEncoder() else { return }
+        enc.setComputePipelineState(hslPipeline)
+        enc.setTexture(scratch, index: 0)
+        enc.setTexture(dst, index: 1)
+        var values = HSLUniforms(bands)
+        enc.setBytes(&values, length: MemoryLayout<HSLUniforms>.stride, index: 0)
+        let w = hslPipeline.threadExecutionWidth
+        let h = max(1, hslPipeline.maxTotalThreadsPerThreadgroup / w)
+        enc.dispatchThreads(MTLSize(width: dst.width, height: dst.height, depth: 1),
+                            threadsPerThreadgroup: MTLSize(width: w, height: h, depth: 1))
+        enc.endEncoding()
+    }
+
+    private func encodeLayer2Pass(_ cb: MTLCommandBuffer, src: MTLTexture, dst: MTLTexture) {
         guard let enc = cb.makeComputeCommandEncoder() else { return }
         enc.setComputePipelineState(layer2Pipeline)
         enc.setTexture(src, index: 0)
@@ -945,13 +986,14 @@ final class Renderer: NSObject {
     /// Run Layer 2 over any texture synchronously. Used by export at full
     /// resolution and by the tests.
     func applyLayer2(to src: MTLTexture, uniforms: Layer2Uniforms? = nil,
-                     into destination: MTLTexture? = nil) -> MTLTexture? {
+                     into destination: MTLTexture? = nil, hsl: HSLAdjustments = HSLAdjustments()) -> MTLTexture? {
         guard let dst = destination ?? store.makeWritable(width: src.width, height: src.height),
               dst.width == src.width, dst.height == src.height,
               let cb = queue.makeCommandBuffer() else { return nil }
         let saved = layer2
         if let uniforms { layer2 = uniforms }
-        encodeLayer2(cb, src: src, dst: dst)
+        let scratch = hsl.isNeutral ? nil : store.makeWritable(width: dst.width, height: dst.height, format: dst.pixelFormat)
+        encodeLayer2(cb, src: src, dst: dst, hsl: scratch == nil ? HSLAdjustments() : hsl, scratch: scratch)
         layer2 = saved
         cb.commit()
         cb.waitUntilCompleted()
@@ -967,7 +1009,7 @@ final class Renderer: NSObject {
     func applyAdjustments(_ adjustments: Adjustments, to src: MTLTexture) -> MTLTexture? {
         store.upload(curves: adjustments.curves, into: curveTable)
         defer { store.upload(curves: currentCurves, into: curveTable); layer2Dirty = true }
-        return applyLayer2(to: src, uniforms: adjustments.uniforms)
+        return applyLayer2(to: src, uniforms: adjustments.uniforms, hsl: adjustments.enabled ? adjustments.hsl : HSLAdjustments())
     }
 
     /// `base` with each frame's rectangle taken from that frame's own texture
@@ -1125,5 +1167,21 @@ extension MTLTexture {
             getBytes(raw.baseAddress!, bytesPerRow: bpr, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
         }
         return data
+    }
+}
+
+/// Must match `HSLUniforms` in Shaders.metal: eight bands as two float4 each.
+struct HSLUniforms {
+    var hue0 = SIMD4<Float>(), hue1 = SIMD4<Float>()
+    var saturation0 = SIMD4<Float>(), saturation1 = SIMD4<Float>()
+    var luminance0 = SIMD4<Float>(), luminance1 = SIMD4<Float>()
+    init(_ hsl: HSLAdjustments) {
+        func pack(_ value: (HSLBand) -> Double, scale: Double) -> (SIMD4<Float>, SIMD4<Float>) {
+            let v = (0..<HSLAdjustments.bandCount).map { Float(value(hsl[$0]) * scale) }
+            return (SIMD4(v[0], v[1], v[2], v[3]), SIMD4(v[4], v[5], v[6], v[7]))
+        }
+        (hue0, hue1) = pack(\.hue, scale: 0.3)                    // ±100 → ±30°
+        (saturation0, saturation1) = pack(\.saturation, scale: 0.01)
+        (luminance0, luminance1) = pack(\.luminance, scale: 0.01) // ±1 stop
     }
 }

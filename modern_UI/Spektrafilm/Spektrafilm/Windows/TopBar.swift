@@ -75,17 +75,36 @@ struct TopBar: View {
             // Space held on the canvas.
             toolButton("cursorarrow", .select, L(.helpSelect) + " (V)")
                 .padding(.leading, Theme.Metric.barClusterGap)
-            toolButton("crop", .crop, "Crop (C)").padding(.leading, Theme.Metric.barIconGap)
+            toolButton("crop", .crop, L("Crop (C)", zh: "裁剪 (C)")).padding(.leading, Theme.Metric.barIconGap)
+            // 景到 20.9: quarter turns beside the crop tool, so a sideways
+            // photograph does not send anyone looking through the rails.
+            iconButton("rotate.left", L("Rotate Left", zh: "向左旋转") + " (⌥⌘[)",
+                       disabled: session.selection == nil || session.pair != nil) {
+                session.geometry = session.geometry.turned(by: -1)
+            }
+            .padding(.leading, Theme.Metric.barIconGap)
+            iconButton("rotate.right", L("Rotate Right", zh: "向右旋转") + " (⌥⌘])",
+                       disabled: session.selection == nil || session.pair != nil) {
+                session.geometry = session.geometry.turned(by: 1)
+            }
+            .padding(.leading, Theme.Metric.barIconGap)
             action(L(.actionSolve),
-                   help: "Auto-exposure and the enlarger filter pack for this paper — print this frame.",
+                   help: L("Auto-exposure and the enlarger filter pack for this paper — print this frame.", zh: "自动测光，并按当前相纸算出放大机滤色——冲印这张照片。选好或换了相纸后点一次。"),
                    active: session.canSolve, enabled: session.canSolve) { session.solveNow() }
+                // 景到 20.8: on the Enlarger step this is the first thing to press.
+                .overlay {
+                    if WorkflowGuide.shared.visible && WorkflowGuide.shared.current == .enlarger && session.canSolve {
+                        RoundedRectangle(cornerRadius: Theme.Metric.actionRadius + 3, style: .continuous)
+                            .stroke(Theme.accent, lineWidth: 2).padding(-3).allowsHitTesting(false)
+                    }
+                }
                 .padding(.leading, Theme.Metric.barActionLeading)
             action(L(.actionOriginal),
                    help: session.filmEdgeShowsFilm
-                       ? "The film edge is on — turn it off to switch back to the original."
+                       ? L("The film edge is on — turn it off to switch back to the original.", zh: "片边已打开——关闭片边后才能切回原图。")
                        : session.showingOriginal
-                           ? "Showing the original — press to go back to the developed print."
-                           : "Show the RAW as Apple's decoder renders it, before any film simulation (⎵ does the same, while held).",
+                           ? L("Showing the original — press to go back to the developed print.", zh: "正在显示原图——再点一次回到冲印效果。")
+                           : L("Show the RAW as Apple's decoder renders it, before any film simulation (⎵ does the same, while held).", zh: "显示未经胶片模拟的原图（按住空格键也可临时查看）。"),
                    active: session.showingOriginal,
                    enabled: session.selection != nil && !session.filmEdgeShowsFilm) {
                 session.toggledOriginal(!session.showingOriginal)
@@ -170,7 +189,7 @@ struct TopBar: View {
         // The service cannot report real progress: a render call does not
         // return until it is finished and the transport is single-flight, so
         // there is nothing to poll. Elapsed time is what is actually known.
-        guard session.working else { return session.status }
+        guard session.working else { return session.status.isEmpty ? L("Open a folder or an image to begin.", zh: "打开文件夹或照片开始。") : session.status }
         return String(format: "%@ · %.1f s", session.status, session.workSeconds)
     }
 

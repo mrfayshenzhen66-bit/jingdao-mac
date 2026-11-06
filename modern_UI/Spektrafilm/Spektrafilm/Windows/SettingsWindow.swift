@@ -52,6 +52,7 @@ struct SettingsWindow: View {
 
     @State private var bundleResult: String?
     @State private var savingBundle = false
+    @State private var showingPanelOrder = false
     @State private var updateStatus: UpdateCheck.Status = .idle
     /// The memory readout refreshes while the page is open and stops when it
     /// closes. A settings page nobody is looking at has no business taking
@@ -94,6 +95,9 @@ struct SettingsWindow: View {
         .frame(width: Theme.Metric.Settings.width, height: Theme.Metric.Settings.height)
         .background(Theme.card)
         .preferredColorScheme(.dark)
+        .sheet(isPresented: $showingPanelOrder) {
+            PanelOrderManagerSheet()
+        }
         .onAppear {
             diagnostics.refreshMemory()
             session.refreshDiskCacheUsage()
@@ -149,6 +153,14 @@ struct SettingsWindow: View {
                              selection: Binding(get: { InterfaceScaleStore.shared.scale },
                                                 set: { InterfaceScaleStore.shared.scale = $0 }))
                     caption(L(.setScaleCaption))
+                    HStack {
+                        Button(L("Show Edit Panels…", zh: "显示编辑面板…")) {
+                            showingPanelOrder = true
+                        }
+                        .buttonStyle(.plain).font(Theme.Font.caption).foregroundStyle(Theme.accent)
+                        Spacer(minLength: 0)
+                    }
+                    caption(L("Arrange the left panel and the pre- and post-development sections. You can also right-click a sidebar title to open this control.", zh: "调整左栏、显影前和显影后的栏目顺序；也可在左右侧栏标题处右键打开。"))
                     HStack {
                         Button(L(.setResetLayout)) { SectionLayoutStore.resetAllLayout() }
                             .buttonStyle(.plain).font(Theme.Font.caption).foregroundStyle(Theme.accent)

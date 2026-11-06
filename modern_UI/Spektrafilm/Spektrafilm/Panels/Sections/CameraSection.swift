@@ -68,6 +68,19 @@ struct CameraSection: View {
                             sublabelView: asShotLine,
                             value: Binding(get: { session.filmExposure }, set: { session.filmExposure = $0 }),
                             range: -4...4, snap: 1 / 3, format: { String(format: "%+.1f", $0) })
+                // 景到 20.8: film exposure moves the scene on the film's curve
+                // and the enlarger re-times the print for it (AGENTS.md trap 30),
+                // so the print's brightness barely changes. Say where brightness is.
+                Button { WorkflowGuide.shared.reveal(.left, "enlarger", session: session) } label: {
+                    (Text(L("Shapes contrast and tone. For brightness use ", zh: "改变影调与反差；调亮度请用 "))
+                     + Text(L("Enlarger ▸ Brightness", zh: "放大机 › 亮度")).foregroundColor(Theme.accent))
+                        .font(Theme.Font.small)
+                        .foregroundStyle(Theme.secondaryText.opacity(0.8))
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .help(L("Show the enlarger's Brightness", zh: "跳到放大机的亮度"))
                 // A frame of a pair: whether the film around it follows its
                 // exposure (answers B1–B3).
                 if session.focusSide != nil {

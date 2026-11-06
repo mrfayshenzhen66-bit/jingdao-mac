@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 namespace spk {
@@ -2145,6 +2146,134 @@ bool Pipeline::run_film(const Image& in, Image& out, Progress* progress, std::st
     Image cur;
     if (!film_prefix(in, FrameShape{in.h, in.w}, cur, error)) return false;
     if (!film_segment(cur, out, error)) return false;
+    progress_ = nullptr;
+    return true;
+}
+
+// --- 景到 personal build: the post-blur cache (2026-11-05) ------------------
+//
+// Measured on an M4 at the 2560 px live tier: upsample + halation are ~75 ms
+// of a ~190 ms film render, and neither depends on a develop-side field. The
+// stages are run exactly as `film_segment` runs them; the cache only decides
+// whether the first four are run or read back.
+
+bool Pipeline::exposure_rescalable() const {
+    const HalationParams& hal = params_.film_render.halation;
+    // `node_headroom`'s own guard: it scales by a smoothstep of the pixel over
+    // the frame's maximum and mid-grey, which is not linear in the exposure.
+    const bool headroom = hal.active && hal.back_reflection && hal.headroom_ev > 0.0 &&
+                          hal.halation_amount > 0.0 && hal.headroom_to_ev > hal.headroom_from_ev;
+    // `node_boost` lifts above a fixed mid-grey level: not linear either.
+    return hal.boost_ev == 0.0 && !headroom && film_cache_usable();
+}
+
+bool Pipeline::film_cache_usable() const {
+    // Overscan and the date imprint add exposures the engine draws at their
+    // own level and change the canvas the later stages see; the striped
+    // executor has its own walk. All three keep the uncached path.
+    return !params_.settings.striped && !overscan_wanted() &&
+           !params_.film_render.date_imprint.active;
+}
+
+bool Pipeline::run_film_cached(const Image& in, Image& out, Progress* progress, FilmCache& cache,
+                               const std::string& key, std::string& error) {
+    if (!film_cache_usable()) {
+        cache = FilmCache{};
+        return run_film(in, out, progress, error);
+    }
+    if (!built_) { error = "pipeline was not built"; return false; }
+    progress_ = progress;
+    if (progress_) { progress_->total_nodes = node_count_; progress_->fired = 0; }
+    last_ae_ev_.reset();
+
+    // The prefix always runs: it fixes the pitch, applies the frame's EV and
+    // draws the film seed, so every piece of state the later stages read is
+    // what an uncached run would leave. It costs a few milliseconds.
+    Image cur;
+    if (!film_prefix(in, FrameShape{in.h, in.w}, cur, error)) return false;
+
+    const bool rescalable = exposure_rescalable();
+    const double ev = params_.camera.exposure_compensation_ev;
+    std::string full_key = key;
+    {
+        char buf[160];
+        std::snprintf(buf, sizeof buf, ";@%ux%u;pitch=%.17g;ae=%.17g;", cur.w, cur.h,
+                      pixel_size_um_, last_ae_ev_ ? *last_ae_ev_ : -1e300);
+        full_key += buf;
+        if (rescalable) {
+            full_key += "lin";
+        } else {
+            std::snprintf(buf, sizeof buf, "ev=%.17g", ev);
+            full_key += buf;
+        }
+    }
+
+    // The stages up to and including `film_blurs`, located by function so a
+    // reordered table cannot silently cache the wrong plane.
+    size_t split = 0;
+    while (split < kFilmStageCount && kFilmStages[split].run != &Pipeline::film_blurs) ++split;
+    if (split == kFilmStageCount) { error = "film_blurs stage not found"; return false; }
+    ++split;
+
+    Chain chain;
+    const bool hit = cache.valid && cache.key == full_key && cache.plane.valid() &&
+                     cache.plane.w == cur.w && cache.plane.h == cur.h;
+    if (hit) {
+        if (progress_ && progress_->cancelled) { error = "render cancelled"; return false; }
+        Timer t(this, "filming.expose.cached");
+        if (cache.rescalable && ev != cache.exposure_ev) {
+            // node_exposure multiplies by 2^ev; the plane holds H(2^ev0 * x),
+            // and H is linear, so H(2^ev * x) = 2^(ev - ev0) * plane.
+            double s[3], t0[3];
+            fill3(s, std::pow(2.0, ev) / std::pow(2.0, cache.exposure_ev));
+            fill3(t0, 0.0);
+            Image scaled;
+            if (!blur_.affine(cache.plane, s, t0, scaled, error)) return false;
+            chain.cur = scaled;
+        } else {
+            chain.cur = cache.plane;
+        }
+        if (!gpu_->flush(error)) return false;
+    } else {
+        Image previous = cache.plane;
+        cache = FilmCache{};
+        chain.cur = cur;
+        for (size_t i = 0; i < split; ++i) {
+            Chain next;
+            if (!(this->*kFilmStages[i].run)(chain, next, error)) return false;
+            chain = next;
+        }
+        // Into a persistent buffer: the plane outlives this render's arena.
+        // The previous plane's buffer is reused when the size matches -- a
+        // fresh 59 MB allocation per halation-slider step measured ~9 ms.
+        // Reuse is ordered: every earlier reader of it was encoded on this
+        // queue and flushed before this render began (trap 19 is about the
+        // pool handing a buffer to someone else, which cannot happen to one
+        // this cache still holds).
+        if (!gpu_->flush(error)) return false;
+        Image kept;
+        kept.h = chain.cur.h; kept.w = chain.cur.w; kept.c = chain.cur.c;
+        if (previous.buf && gpu_->size_bytes(previous.buf.get()) == chain.cur.bytes()) {
+            kept.buf = previous.buf;
+        } else {
+            previous = Image{};
+            kept.buf = gpu_->alloc_persistent(chain.cur.bytes(), error);
+        }
+        if (!kept.buf || !gpu_->copy(kept.buf.get(), 0, chain.cur.buf.get(), 0,
+                                     chain.cur.bytes(), error)) return false;
+        cache.valid = true;
+        cache.key = full_key;
+        cache.rescalable = rescalable;
+        cache.exposure_ev = ev;
+        cache.plane = kept;
+    }
+
+    for (size_t i = split; i < kFilmStageCount; ++i) {
+        Chain next;
+        if (!(this->*kFilmStages[i].run)(chain, next, error)) return false;
+        chain = next;
+    }
+    out = chain.cur;
     progress_ = nullptr;
     return true;
 }

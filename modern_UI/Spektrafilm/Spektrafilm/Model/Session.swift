@@ -131,12 +131,14 @@ final class Session: CanvasHost {
     var params: FilmParams {
         get { sidecar.params }
         set { guard newValue != sidecar.params else { return }
+              let previous = sidecar.params
               pushUndo()
               // The film edge takes the crop into its gate and gives it back
               // (`Session+FilmEdge.swift`); the geometry moves before the
               // params land, so the develop below cuts the new framing.
               filmEdgeWillChange(from: sidecar.params, to: newValue)
               sidecar.params = newValue
+              rememberCombinationChange(from: previous)
               renderer.geometry = canvasGeometry
               requestPrint(); markStale(); scheduleSave() }
     }
@@ -156,6 +158,7 @@ final class Session: CanvasHost {
               let curvesChanged = newValue.curves != sidecar.adjustments.curves
               sidecar.adjustments = newValue
               renderer.layer2 = newValue.uniforms
+              renderer.hsl = newValue.enabled ? newValue.hsl : HSLAdjustments()
               if curvesChanged { renderer.setCurves(newValue.curves) } else { renderer.needsDraw?() }
               scheduleSave() }
     }
@@ -614,7 +617,10 @@ final class Session: CanvasHost {
     var canCompare: Bool { selection != nil && renderer.canCompare && !filmEdgeShowsFilm }
     var histogram: [Float] = Array(repeating: 0, count: 1024)
     var hoverValue: SIMD3<Float>?      // encoded RGB under the cursor, for the curve readout
-    var status = "Open a folder or an image to begin."
+    /// Empty until something happens; the bar shows the welcome line for it
+    /// (`TopBar.statusText`), localised there because this initialiser is not
+    /// main-actor isolated.
+    var status = ""
     var busy = false
     var previewSoft = false            // the canvas shows a stale/interpolated print
     /// Whether the canvas holds the frame at its **own** resolution with
@@ -850,6 +856,45 @@ final class Session: CanvasHost {
     /// copy or sync takes. Persisted, and all seven by default, which is what ⇧⌘V
     /// copied before the groups existed.
     @ObservationIgnored private let clipboardDefaults: UserDefaults
+    /// Personal starting materials and named combinations, separate from each
+    /// photograph's sidecar and from the temporary settings clipboard.
+    let filmPaperPresets: FilmPaperPresetStore
+
+    var canApplyFilmPaperCombination: Bool { !batchExporting && pair == nil }
+
+    @discardableResult
+    func applyFilmPaperCombination(_ combination: FilmPaperCombination) -> Bool {
+        guard canApplyFilmPaperCombination,
+              let valid = combination.validated(in: catalog) else { return false }
+        params = valid.applied(to: params)
+        // Applying an already-selected combination still explicitly chooses
+        // the default for the next new photograph.
+        filmPaperPresets.remember(valid)
+        return true
+    }
+
+    private func rememberCurrentCombination() {
+        guard canApplyFilmPaperCombination,
+              let valid = FilmPaperCombination(params).validated(in: catalog) else { return }
+        filmPaperPresets.remember(valid)
+    }
+
+    private func rememberCombinationChange(from previous: FilmParams) {
+        guard FilmPaperCombination(previous) != FilmPaperCombination(params) else { return }
+        rememberCurrentCombination()
+    }
+
+    /// Loading a photograph is not a material-selection gesture. Existing
+    /// edits always win and never update the remembered global combination.
+    func startingSidecar(saved: Sidecar?) -> Sidecar {
+        if let saved { return saved }
+        var fresh = Sidecar()
+        if filmPaperPresets.rememberLastCombination,
+           let valid = filmPaperPresets.lastCombination?.validated(in: catalog) {
+            fresh.params = valid.applied(to: fresh.params)
+        }
+        return fresh
+    }
     /// The store's writes made outside this window (CLI, MCP server, a
     /// script): the open frame follows them instead of waiting for a relaunch.
     @ObservationIgnored private let sidecarWatch = SidecarWatch()
@@ -1042,8 +1087,10 @@ final class Session: CanvasHost {
     nonisolated static var diskCacheRoot: URL { cacheRoot.appending(path: "store") }
 
     init(renderer: Renderer? = nil, diagnostics: Diagnostics = .shared,
-         diskCache: DiskCacheStore? = nil, clipboardDefaults: UserDefaults = .standard) {
+         diskCache: DiskCacheStore? = nil, clipboardDefaults: UserDefaults = .standard,
+         filmPaperDefaults: UserDefaults = .standard) {
         self.clipboardDefaults = clipboardDefaults
+        self.filmPaperPresets = FilmPaperPresetStore(defaults: filmPaperDefaults)
         self.clipboardGroups = Self.storedClipboardGroups(in: clipboardDefaults)
         guard let renderer = renderer ?? Renderer(arena: diagnostics.arena) else {
             fatalError("Metal is required")
@@ -1085,6 +1132,7 @@ final class Session: CanvasHost {
             self?.isDigitalIntermediate(texture) ?? false
         }
         renderer.layer2 = sidecar.adjustments.uniforms
+        renderer.hsl = sidecar.adjustments.enabled ? sidecar.adjustments.hsl : HSLAdjustments()
         Session.removeLegacyLinearCache()
         if let cache {
             Task.detached(priority: .utility) {
@@ -1107,6 +1155,7 @@ final class Session: CanvasHost {
             Task { @MainActor in self?.serviceReady = false; self?.status = reason; self?.lastError = reason }
         }) }
         sidecarWatch.start { [weak self] in self?.sidecarStoreChanged() }
+        sidecar = startingSidecar(saved: nil)
         bootTask = warmUp()
     }
 
@@ -1316,7 +1365,7 @@ final class Session: CanvasHost {
     // MARK: - library
 
     func open(urls: [URL]) {
-        guard !batchExporting else { status = "An export is running."; return }
+        guard !batchExporting else { status = L("An export is running.", zh: "正在导出。"); return }
         // A pair opened by its own file: its folder's filmstrip, with the pair
         // on the canvas.
         if let pairURL = urls.first(where: HalfFramePair.isPair), let p = HalfFramePair.load(pairURL) {
@@ -1327,7 +1376,7 @@ final class Session: CanvasHost {
             return
         }
         let files = Library.frames(from: urls)
-        guard !files.isEmpty else { status = "Nothing openable in the selection."; return }
+        guard !files.isEmpty else { status = L("Nothing openable in the selection.", zh: "所选内容里没有可打开的照片。"); return }
         let new = FrameOrder.applied(to: Self.withPairs(files))
         if let selection, !new.contains(where: { $0.id == selection }) {
             enqueuePrintWriteback(for: selection)
@@ -1386,6 +1435,7 @@ final class Session: CanvasHost {
         previewSoft = false
         refusal = nil
         memoryWarning = nil
+        cancelEngineFullRender()
         fullPending = false
         fullTask?.cancel(); fullTask = nil
         fullGeneration += 1
@@ -1400,7 +1450,7 @@ final class Session: CanvasHost {
         releaseEngineAccounting()
         serviceSessionID = nil
         engineFraming = nil
-        status = "\(frames.count) frames · pick one in the filmstrip to develop."
+        status = L("\(frames.count) frames · pick one in the filmstrip to develop.", zh: "\(frames.count) 张照片 · 在下方胶片条里点一张开始。")
     }
 
     func openPanel() { let urls = Library.chooseFilesOrFolder(); if !urls.isEmpty { open(urls: urls) } }
@@ -1470,7 +1520,7 @@ final class Session: CanvasHost {
         } else {
             renderer.needsDraw?()
         }
-        status = "\(url.lastPathComponent)  ·  reloaded from the sidecar"
+        status = "\(url.lastPathComponent)  ·  " + L("reloaded from the sidecar", zh: "已从编辑记录恢复")
         log.info(.canvas, "sidecar reloaded", [.init("frame", url.lastPathComponent)])
     }
 
@@ -1488,7 +1538,7 @@ final class Session: CanvasHost {
         if frames.isEmpty {
             selection = nil
             renderer.setLive(nil)
-            status = "Open a folder or an image to begin."
+            status = L("Open a folder or an image to begin.", zh: "打开文件夹或照片开始。")
         } else if selection == url {
             unloadSelection()
         }
@@ -1580,6 +1630,7 @@ final class Session: CanvasHost {
         sourceLongEdge = 0
         // A new frame invalidates the previous frame's native render; the
         // print that lands for *this* one asks for its own.
+        cancelEngineFullRender()
         fullPending = false
         fullTask?.cancel(); fullTask = nil
         fullGeneration += 1
@@ -1588,7 +1639,9 @@ final class Session: CanvasHost {
         wantsDevelop = false
         developTask?.cancel(); developTask = nil
         renderer.dropFullRender()
-        sidecar = Sidecar.load(for: url) ?? Sidecar()
+        let savedSidecar = Sidecar.load(for: url)
+        sidecar = HalfFramePair.isPair(url)
+            ? (savedSidecar ?? Sidecar()) : startingSidecar(saved: savedSidecar)
         // The file this frame's edits live in: from here on, a write made
         // outside this window reaches the canvas (issue #29).
         sidecarWatch.watch(Sidecar.url(for: url))
@@ -1641,6 +1694,9 @@ final class Session: CanvasHost {
         sampleMemory("frame_switch")
         let gen = pipeline.supersede()
         loadTask = Task { await load(url, generation: gen) }
+        // Pin the initial choice to this photograph even if it has only been
+        // browsed. A later change to the default must not replace its choice.
+        if savedSidecar == nil, !HalfFramePair.isPair(url) { scheduleSave() }
         // `prefetchNeighbours(of:)` was deleted here (IMPL-decode-pipeline §4).
         // It had three defects and no measurement behind it: its entries were
         // never removed and never cancelled — not on a frame change, not in
@@ -2067,7 +2123,7 @@ final class Session: CanvasHost {
                 clock.lap("original")
             }
             noteOpen(clock, url: url, mode: "print-cache", pixels: picture.sourceSize)
-            status = "\(url.lastPathComponent)  ·  restored print"
+            status = "\(url.lastPathComponent)  ·  " + L("restored print", zh: "已恢复上次的冲印")
             return
         }
         if !requiresDecode, !wantsDevelop, let picture = await displayPicture(for: url, settings: settings) {
@@ -2083,7 +2139,7 @@ final class Session: CanvasHost {
             }
             clock.lap("display-cache")
             noteOpen(clock, url: url, mode: "display-cache", pixels: picture.sourceSize)
-            status = "\(url.lastPathComponent)  ·  cached preview"
+            status = "\(url.lastPathComponent)  ·  " + L("cached preview", zh: "缓存预览")
             return
         }
         // Decode and preview, and then the frame is *on the canvas* — that is
@@ -2205,8 +2261,8 @@ final class Session: CanvasHost {
             // that "decoded" would be describing a picture the user is not
             // looking at.
             status = renderer.store.print(for: url) == nil
-                ? "\(url.lastPathComponent)  ·  decoded — press Solve to develop it."
-                : "\(url.lastPathComponent)  ·  showing its last print."
+                ? "\(url.lastPathComponent)  ·  " + L("decoded — press Solve to develop it.", zh: "已解码 — 点顶部「配光」开始冲印。")
+                : "\(url.lastPathComponent)  ·  " + L("showing its last print.", zh: "显示上次的冲印结果。")
             return
         }
         // Handed the clock so the develop continues the same line: the decode
@@ -2317,7 +2373,13 @@ final class Session: CanvasHost {
         // A film edge changes which frame the engine holds (the decode cut by
         // the crop), and that is an open, not a delta.
         if serviceSessionID != nil, engineFraming != wantedEngineFraming { releaseEngineFrame() }
-        guard serviceSessionID == nil else { scheduler.request(params); return }
+        guard serviceSessionID == nil else {
+            // The native render in flight is of `sent`; an edit away from it
+            // makes it worthless, and it would hold the single-flight client
+            // for up to 2 s before this edit's preview could start.
+            if params != scheduler.sent { cancelEngineFullRender() }
+            scheduler.request(params); return
+        }
         Task { await ensureDeveloped() }
     }
 
@@ -2362,7 +2424,7 @@ final class Session: CanvasHost {
                         pixels: developForecastPixels(d.pixelSize))
             return nil
         }
-        status = "Developing…"
+        status = L("Developing…", zh: "冲印中…")
         // Preserved rather than cleared: Solve sets it around the develop *and*
         // the solve that follows, and clearing it here would open a window in
         // which the button looks ready while the engine is still working.
@@ -2476,7 +2538,7 @@ final class Session: CanvasHost {
                 // cause is usually that the engine is not in this checkout.
                 stockWarning = "Rendering on the \(b.label) path, not the GPU core — see HANDOFF-GPU-WIRING.md."
             }
-            status = "\(statusBase!)  ·  \(rr.response.reprint ? "reprint" : "render") \(Int(rr.response.elapsedMs)) ms"
+            status = "\(statusBase!)  ·  \(rr.response.reprint ? L("reprint", zh: "重印") : L("render", zh: "渲染")) \(Int(rr.response.elapsedMs)) ms"
             // The user may have moved a slider while the film side was running.
             scheduler.request(sidecar.params)
             return r.sessionID
@@ -2571,7 +2633,7 @@ final class Session: CanvasHost {
         previewSoft = wantsFullRender
         lastRenderMs = r.elapsedMs
         if pair != nil { refreshPairGates(); placementLanded() }
-        if let base = statusBase { status = "\(base)  ·  \(r.reprint ? "reprint" : "render") \(Int(r.elapsedMs)) ms" }
+        if let base = statusBase { status = "\(base)  ·  \(r.reprint ? L("reprint", zh: "重印") : L("render", zh: "渲染")) \(Int(r.elapsedMs)) ms" }
         frameStates[url] = .processed
         sidecar.state = .processed
         scheduleSave()
@@ -2720,6 +2782,7 @@ final class Session: CanvasHost {
         releaseEngineAccounting()
         serviceSessionID = nil
         engineFraming = nil
+        cancelEngineFullRender()
         fullPending = false
         fullTask?.cancel(); fullTask = nil
         fullGeneration += 1
@@ -2732,6 +2795,7 @@ final class Session: CanvasHost {
     private func pushLayer2(_ adjustments: Adjustments) {
         let shown = pairIsLayered ? Adjustments() : adjustments
         renderer.layer2 = shown.uniforms
+        renderer.hsl = shown.enabled ? shown.hsl : HSLAdjustments()
         renderer.setCurves(shown.curves)
     }
 
@@ -2831,6 +2895,7 @@ final class Session: CanvasHost {
             // decode setting and does not appear in it, so the resident render
             // still matches its own stamp and the cache serves it back as if
             // it were current, which puts the old colour on screen.
+            cancelEngineFullRender()
             fullPending = false
             fullTask?.cancel(); fullTask = nil
             fullGeneration += 1
@@ -3118,6 +3183,7 @@ final class Session: CanvasHost {
         p.scanFilm = false
         p.digitalIntermediate = false
         params = p
+        rememberCurrentCombination()
     }
 
     /// Choosing a film also follows its **declared** paper, unless the user
@@ -3142,6 +3208,7 @@ final class Session: CanvasHost {
         // was — which is the point: coming back to a negative restores the
         // paper rather than landing on a default.
         applyFilmStageRule()
+        rememberCurrentCombination()
     }
 
     /// Choosing a film decides whether there is a print stage at all.
@@ -3465,8 +3532,8 @@ final class Session: CanvasHost {
                 self.renderer.setLive(texture)
                 self.previewSoft = true
                 let ms = String(format: "%.1f", outcome.meta.applyMs)
-                self.status = "\(stock) from the baked print LUT in \(ms) ms — "
-                            + "no glare, and not your print grade; the real print is rendering."
+                self.status = L("\(stock) from the baked print LUT in \(ms) ms — no glare, and not your print grade; the real print is rendering.",
+                                zh: "\(stock) 相纸查找表快速预览（\(ms) ms，未含耀光和成片调整），正式冲印正在进行。")
             }
         }
     }
@@ -3510,20 +3577,28 @@ final class Session: CanvasHost {
     func contextMenu() -> NSMenu? {
         if pair != nil { return pairContextMenu() }
         let m = NSMenu()
-        let fit = m.addItem(withTitle: "Zoom to Fit", action: #selector(zoomFit), keyEquivalent: "")
+        let fit = m.addItem(withTitle: L("Zoom to Fit", zh: "适合窗口"), action: #selector(zoomFit), keyEquivalent: "")
         fit.target = self; fit.isEnabled = !zoomLocked
-        let hundred = m.addItem(withTitle: "Zoom to 100 %", action: #selector(zoomHundred), keyEquivalent: "")
+        let hundred = m.addItem(withTitle: L("Zoom to 100 %", zh: "缩放至 100 %"), action: #selector(zoomHundred), keyEquivalent: "")
         hundred.target = self; hundred.isEnabled = !zoomLocked
         m.addItem(.separator())
-        let copy = m.addItem(withTitle: "Copy Settings", action: #selector(copyMenu), keyEquivalent: "")
+        // 景到 20.9: the quarter turns, where a sideways photograph is noticed.
+        let left = m.addItem(withTitle: L("Rotate Left", zh: "向左旋转"), action: #selector(rotateLeftMenu), keyEquivalent: "")
+        left.target = self; left.isEnabled = selection != nil
+        let right = m.addItem(withTitle: L("Rotate Right", zh: "向右旋转"), action: #selector(rotateRightMenu), keyEquivalent: "")
+        right.target = self; right.isEnabled = selection != nil
+        m.addItem(.separator())
+        let copy = m.addItem(withTitle: L("Copy Settings", zh: "复制设置"), action: #selector(copyMenu), keyEquivalent: "")
         copy.target = self; copy.isEnabled = canCopySettings
-        let paste = m.addItem(withTitle: "Paste Settings", action: #selector(pasteMenu), keyEquivalent: "")
+        let paste = m.addItem(withTitle: L("Paste Settings", zh: "粘贴设置"), action: #selector(pasteMenu), keyEquivalent: "")
         paste.target = self; paste.isEnabled = canPasteSettings
         m.addItem(.separator())
-        m.addItem(withTitle: "Reset Crop", action: #selector(resetCrop), keyEquivalent: "").target = self
-        m.addItem(withTitle: "Export…", action: #selector(exportMenu), keyEquivalent: "").target = self
+        m.addItem(withTitle: L("Reset Crop", zh: "重置裁剪"), action: #selector(resetCrop), keyEquivalent: "").target = self
+        m.addItem(withTitle: L("Export…", zh: "导出…"), action: #selector(exportMenu), keyEquivalent: "").target = self
         return m
     }
+    @objc private func rotateLeftMenu() { geometry = geometry.turned(by: -1) }
+    @objc private func rotateRightMenu() { geometry = geometry.turned(by: 1) }
     @objc private func zoomFit() { zoomToFit() }
     @objc private func zoomHundred() { zoomTo(fraction: 1) }
     @objc private func copyMenu() { copySettings() }
@@ -3774,7 +3849,7 @@ final class Session: CanvasHost {
         defer { fullPending = false }
         do {
             let outcome = try await client.render(.reprint,
-                RenderRequest(sessionID: sid, tier: "full"))
+                RenderRequest(sessionID: sid, tier: "full"), cancellable: true)
             let r = outcome.response
             // A render already committed to the engine outlives a cancelled
             // `fullTask`, and a reopen (a white-balance change) moves neither
@@ -3784,6 +3859,13 @@ final class Session: CanvasHost {
             // matches would serve the old colour on the next edit.
             guard gen == fullGeneration, selection == url, sid == serviceSessionID,
                   var tex = outcome.texture, let w = r.width, let h = r.height else { return }
+            // An edit arrived while it rendered and the cancel missed (it is
+            // read between nodes): this is the previous print. The edit's own
+            // preview is on its way and asks for its own native render.
+            guard !scheduler.pending else {
+                canvasLog("full render \(w)x\(h) superseded by a newer edit")
+                scheduleFullRender(); return
+            }
             // A pair at its own resolution: the same cut of the same prints.
             if pair != nil {
                 if let layered = await pairLayered(base: tex, tier: "full") { tex = layered }
@@ -3810,9 +3892,25 @@ final class Session: CanvasHost {
             sampleMemory("full_render")
             if let base = statusBase { status = base }
             schedulePrintWriteback()
+        } catch EngineClient.ClientError.cancelled {
+            // `cancelEngineFullRender()`: an edit or a frame change, not a
+            // failure. Ask again; the guard at the top waits for the edit's
+            // preview, and `applyRender` reschedules once it lands — but an
+            // edit dragged back to `sent` never sends one, and would leave the
+            // canvas soft forever without this.
+            canvasLog("full render cancelled")
+            if gen == fullGeneration, selection == url, serviceSessionID == sid { scheduleFullRender() }
         } catch {
             noteFailure(error, operation: "full_render", frame: url.lastPathComponent)
         }
+    }
+
+    /// Stop the native render the engine is running, not only its `Task`: the
+    /// client is single-flight, so a cancelled `fullTask` alone still left the
+    /// next edit's preview queued behind a 1–2 s render nobody would see.
+    private func cancelEngineFullRender() {
+        guard fullPending else { return }
+        if client.cancelFullRender() { canvasLog("full render cancel requested") }
     }
 
     // MARK: - editing history, clipboard, service
@@ -3838,6 +3936,7 @@ final class Session: CanvasHost {
         let current = sidecar
         let piece = undoPairs.popLast() ?? nil
         sidecar = previous
+        rememberCombinationChange(from: current.params)
         pushLayer2(previous.adjustments)
         renderer.geometry = canvasGeometry
         selectedMaskID = previous.masks.first { $0.id == selectedMaskID }?.id ?? previous.masks.last?.id
@@ -3860,7 +3959,7 @@ final class Session: CanvasHost {
             markStale()
             scheduleSave()
             lastUndoAt = .distantPast
-            status = "Undo — \(undoStack.count) step\(undoStack.count == 1 ? "" : "s") left."
+            status = L("Undo — \(undoStack.count) step\(undoStack.count == 1 ? "" : "s") left.", zh: "已撤销 — 还可撤销 \(undoStack.count) 步。")
             return
         }
         if current.decode != previous.decode {
@@ -3872,7 +3971,7 @@ final class Session: CanvasHost {
         markStale()
         scheduleSave()
         lastUndoAt = .distantPast
-        status = "Undo — \(undoStack.count) step\(undoStack.count == 1 ? "" : "s") left."
+        status = L("Undo — \(undoStack.count) step\(undoStack.count == 1 ? "" : "s") left.", zh: "已撤销 — 还可撤销 \(undoStack.count) 步。")
     }
 
     var canCopySettings: Bool { selection != nil && !clipboardGroups.isEmpty }
@@ -3916,7 +4015,7 @@ final class Session: CanvasHost {
         guard let url = selection, !clipboardGroups.isEmpty else { return }
         clipboard = SettingsClip(groups: clipboardGroups, settings: sidecar,
                                  sourceName: url.lastPathComponent)
-        status = "Copied \(clipboardGroups.count) of \(ClipboardGroup.allCases.count) groups from \(url.lastPathComponent)."
+        status = L("Copied \(clipboardGroups.count) of \(ClipboardGroup.allCases.count) groups from \(url.lastPathComponent).", zh: "已从 \(url.lastPathComponent) 复制 \(clipboardGroups.count)/\(ClipboardGroup.allCases.count) 组设置。")
     }
 
     /// Write what the clipboard holds onto every paste target (RFC-027 §4).
@@ -3943,7 +4042,9 @@ final class Session: CanvasHost {
         guard next != sidecar else { return false }
         pushUndo()
         let decodeChanged = next.decode != sidecar.decode
+        let previousParams = sidecar.params
         sidecar = next
+        rememberCombinationChange(from: previousParams)
         if clip.groups.contains(.filmEffects) { recomputeFilmFormat(beforeOpen: true) }
         // The clip carries a Tone, so the label follows the paste the same way
         // it follows the pill.
@@ -4025,13 +4126,13 @@ final class Session: CanvasHost {
     /// means "solve" would visibly not solve.
     func solveNow() {
         guard serviceReady, selection != nil else {
-            status = "The render service is not running."; return
+            status = L("The render service is not running.", zh: "渲染服务没有运行。"); return
         }
         guard !busy else { return }
         wantsDevelop = true
         busy = true
         startClock()
-        status = "Solving…"
+        status = L("Solving…", zh: "配光中…")
         Task {
             defer { busy = false }
             do {
@@ -4043,7 +4144,7 @@ final class Session: CanvasHost {
                 let rr = try await client.render(.reprint, RenderRequest(sessionID: sid))
                 guard serviceSessionID == sid else { return }
                 applyRender(rr, generation: serviceGeneration)
-                status = "Solved  ·  reprint \(Int(rr.response.elapsedMs)) ms"
+                status = L("Solved  ·  reprint \(Int(rr.response.elapsedMs)) ms", zh: "配光完成  ·  重印 \(Int(rr.response.elapsedMs)) ms")
                 scheduleSave()
             } catch {
                 noteFailure(error, operation: "solve", frame: selection?.lastPathComponent)
@@ -4089,8 +4190,8 @@ final class Session: CanvasHost {
             renderer.store.dropFullRender()
             cancelNativeOriginal()
             decodedGeneration = 0
-            guard let url = selection else { status = "Render service stopped."; return }
-            status = "Restarting the render service…"
+            guard let url = selection else { status = L("Render service stopped.", zh: "渲染服务已停止。"); return }
+            status = L("Restarting the render service…", zh: "正在重启渲染服务…")
             let gen = pipeline.supersede()
             loadTask = Task { await load(url, generation: gen) }
         }
@@ -5031,8 +5132,8 @@ extension Session {
                                  : L("Turn the Camera (One Above the Other)", zh: "相机竖持（上下排列）"),
             #selector(pairMenuTurnCamera))
         m.addItem(.separator())
-        add("Zoom to Fit", #selector(pairMenuFit), enabled: !zoomLocked)
-        add("Export…", #selector(pairMenuExport), enabled: pair?.isComplete == true)
+        add(L("Zoom to Fit", zh: "适合窗口"), #selector(pairMenuFit), enabled: !zoomLocked)
+        add(L("Export…", zh: "导出…"), #selector(pairMenuExport), enabled: pair?.isComplete == true)
         return m
     }
 

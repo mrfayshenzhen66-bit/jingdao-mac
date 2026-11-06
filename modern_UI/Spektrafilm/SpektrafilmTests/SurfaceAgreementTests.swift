@@ -255,6 +255,82 @@ final class SurfaceAgreementTests: XCTestCase {
         XCTAssertEqual(reopened.thumbnailGeometry(for: urls[0]), g, "a new session does not read the saved crop")
     }
 
+    // MARK: - signed export surface
+
+    /// The signature belongs to the final, cropped and rotated photograph.
+    /// This uses a synthetic TIFF and private stores, so it neither skips for
+    /// absent RAW fixtures nor writes a person's sidecars or signature assets.
+    func testSignedProofAndTIFFAgreeAfterCropRotationAndResize() async throws {
+        let root = try SignatureTestFixture.directory()
+        let suite = "spk-signature-surface-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let previousStore = Sidecar.storeDirectory
+        try XCTSkipIf(FileManager.default.fileExists(atPath: Session.legacyLinearCache.path),
+                      "Refuse Session startup cleanup of a real legacy cache")
+        Sidecar.useStore(at: root.appending(path: "Sidecars"))
+        defer {
+            Sidecar.useStore(at: previousStore)
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let diagnostics = Diagnostics(defaults: defaults)
+        let renderer = try XCTUnwrap(Renderer(arena: diagnostics.arena))
+        let cache = try DiskCacheStore(root: root.appending(path: "Cache"))
+        let session = Session(renderer: renderer, diagnostics: diagnostics, diskCache: cache,
+                              clipboardDefaults: defaults, filmPaperDefaults: defaults)
+        defer {
+            session.flushSave()
+            if let selected = session.selection { session.remove(selected) }
+        }
+        let photo = root.appending(path: "synthetic.tiff")
+        try SignatureTestFixture.write(SignatureTestFixture.base(width: 640, height: 480), to: photo, type: .tiff)
+        var sidecar = Sidecar(); sidecar.noFilm = true
+        sidecar.params.grainActive = false; sidecar.params.glareActive = false
+        try sidecar.save(for: photo)
+        let png = root.appending(path: "signature.png")
+        try SignatureTestFixture.write(SignatureTestFixture.quadrants(), to: png, type: .png)
+        let assets = SignatureAssetStore(directory: root.appending(path: "Assets"))
+        var recipe = ExportRecipe()
+        recipe.signature = SignatureTestFixture.settings
+        recipe.signature.asset = try assets.importPNG(from: png)
+        recipe.format = .tiff; recipe.colorSpace = .displayP3
+        recipe.folder = .fixed(path: root.appending(path: "Exported").path)
+        recipe.subfolder = ""; recipe.outputSize = .longEdge(240)
+        session.open(urls: [photo])
+        try await waitUntil("signature synthetic decode", timeout: 60) {
+            session.selection == photo && session.decoded != nil && session.serviceReady
+        }
+        _ = await session.ensureDeveloped()
+        var g = Geometry()
+        g.crop = CropRect(x: 0.125, y: 0.125, width: 0.75, height: 0.75)
+        g.quarterTurns = 1
+        session.geometry = g
+        let proofResult = await session.softProof(recipe: recipe, signatureAssets: assets)
+        let proof = try XCTUnwrap(proofResult)
+        let context = NamingRule.Context(originalName: "synthetic", filmStock: session.params.filmStock,
+                    printStock: session.params.printStock, pixelSize: CGSize(width: 640, height: 480),
+                    counter: 1, date: Date())
+        let result = try await Exporter.export(session: session, recipe: recipe, context: context,
+                    sessionID: XCTUnwrap(session.serviceSessionIDForExport), signatureAssets: assets)
+        let url = try XCTUnwrap(result.urls.first)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(url as CFURL, nil))
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual(image.width, 180); XCTAssertEqual(image.height, 240)
+        XCTAssertEqual(image.bitsPerComponent, 16)
+        XCTAssertEqual(try SignatureTestFixture.values(image), SignatureTestFixture.values(proof.displayImage))
+        let sample = SignatureTestFixture.rgb(try SignatureTestFixture.values(image), width: 180, x: 126, y: 55)
+        XCTAssertGreaterThan(sample[0], sample[1] + 10000)
+        XCTAssertGreaterThan(sample[0], sample[2] + 10000)
+        recipe.format = .di
+        do {
+            _ = try await Exporter.export(session: session, recipe: recipe, context: context,
+                    sessionID: XCTUnwrap(session.serviceSessionIDForExport), signatureAssets: assets)
+            XCTFail("A signature must never be baked into a DI density master")
+        } catch SignatureError.digitalIntermediate {
+            // Explicit rejection is part of the format contract.
+        }
+    }
+
     // MARK: - fixtures and helpers
 
     /// A frame whose left half is pure red and right half pure blue.

@@ -58,10 +58,11 @@ final class SectionLayoutStore {
     static func resetAllLayout(defaults: UserDefaults = .standard) {
         for key in defaults.dictionaryRepresentation().keys
         where key.hasPrefix(keyPrefix) || key.hasPrefix(Session.uiKey + "section.")
-            || key.hasPrefix(PanelWidthStore.keyPrefix) {
+            || key.hasPrefix(PanelWidthStore.keyPrefix) || key.hasPrefix("ui2.panelOrder.") {
             defaults.removeObject(forKey: key)
         }
         shared.heights = [:]
+        PanelOrderStore.shared.reloadFromDefaults()
         NotificationCenter.default.post(name: .layoutReset, object: nil)
     }
 }

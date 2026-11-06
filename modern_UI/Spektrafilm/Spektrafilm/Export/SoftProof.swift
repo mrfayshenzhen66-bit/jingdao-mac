@@ -177,21 +177,27 @@ extension Session {
     /// one written to look like it. That is what makes §7.6's identity exact
     /// rather than approximate, and what the page's central claim rests on.
     @MainActor
-    func softProof(recipe: ExportRecipe) async -> SoftProof? {
-        await makeSoftProof(recipe: recipe, displayMaxEdge: nil)
+    func softProof(recipe: ExportRecipe,
+                   signatureAssets: SignatureAssetStore = .shared) async -> SoftProof? {
+        await makeSoftProof(recipe: recipe, displayMaxEdge: nil,
+                            includeSignature: true, signatureAssets: signatureAssets)
     }
 
     /// The page's proof: the same full-size render and the same statistics,
     /// with one GPU downsample before the `CGImage` is materialised.
     @MainActor
-    func softProofForDisplay(recipe: ExportRecipe, paneSize: CGSize) async -> SoftProof? {
+    func softProofForDisplay(recipe: ExportRecipe, paneSize: CGSize,
+                             includeSignature: Bool = true,
+                             signatureAssets: SignatureAssetStore = .shared) async -> SoftProof? {
         await makeSoftProof(recipe: recipe,
-                            displayMaxEdge: SoftProof.displayMaxEdge(for: paneSize))
+                            displayMaxEdge: SoftProof.displayMaxEdge(for: paneSize),
+                            includeSignature: includeSignature, signatureAssets: signatureAssets)
     }
 
     @MainActor
     private func makeSoftProof(recipe: ExportRecipe,
-                               displayMaxEdge: Int?) async -> SoftProof? {
+                               displayMaxEdge: Int?, includeSignature: Bool,
+                               signatureAssets: SignatureAssetStore) async -> SoftProof? {
         guard recipe.format.takesColorSpace else { return nil }
         // Nothing developed yet (the page opened from Browse, say): ask for it
         // the way every other view that wants a picture does.
@@ -213,7 +219,24 @@ extension Session {
         }
         guard !Task.isCancelled else { return nil }
 
-        return SoftProof.make(from: rendered, renderer: renderer,
-                              targetName: name, displayMaxEdge: displayMaxEdge)
+        guard let proof = SoftProof.make(from: rendered, renderer: renderer,
+                                         targetName: name, displayMaxEdge: displayMaxEdge)
+        else { return nil }
+        guard includeSignature, recipe.signature.enabled else { return proof }
+        do {
+            // Full-resolution proof and export use the very same compositor.
+            // The interactive page requests a clean base and re-composites
+            // only its small display image as the signature is dragged.
+            let image = try SignatureCompositor.composite(proof.displayImage,
+                settings: recipe.signature, assets: signatureAssets)
+            return SoftProof(displayImage: image, filePixelSize: proof.filePixelSize,
+                target: proof.target, targetName: proof.targetName,
+                compressedFraction: proof.compressedFraction,
+                clippedFraction: proof.clippedFraction, movedFraction: proof.movedFraction,
+                isPlaceholder: proof.isPlaceholder)
+        } catch {
+            log.warn(.export, "signature_proof_failed", [.init("error", EngineMessage.technical(error))])
+            return nil
+        }
     }
 }

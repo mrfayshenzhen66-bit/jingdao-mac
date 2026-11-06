@@ -16,6 +16,7 @@ import AppKit
 import SwiftUI
 
 struct AboutWindow: View {
+    @Environment(\.openWindow) private var openWindow
     @State private var showing: Licence?
 
     /// One licence text in the bundle. `body` is read lazily: five files, of
@@ -87,6 +88,17 @@ struct AboutWindow: View {
             credits
             Divider()
             licenceList
+            Divider()
+            // 景到 20.9: the one door onto the tip jar from here.
+            Button { openWindow(id: "donate") } label: {
+                Label(L("Buy the Author a Coffee…", zh: "请作者喝杯咖啡…"), systemImage: "cup.and.saucer")
+                    .font(Theme.Font.sublabel)
+                    .foregroundStyle(Theme.accent)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 20).padding(.vertical, 12)
         }
         .frame(width: 460)
         .background(Theme.card)
@@ -100,9 +112,27 @@ struct AboutWindow: View {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable().frame(width: 64, height: 64)
             VStack(alignment: .leading, spacing: 3) {
-                Text("SpektraLab").font(.system(size: 20, weight: .semibold))
+                Text("景到 Jingdao").font(.system(size: 20, weight: .semibold))
                 Text(AboutWindow.version).font(Theme.Font.sublabel).foregroundStyle(.secondary)
-                Text("A spectral film and print simulation for macOS.")
+                // 个人修改版的身份声明：名称、图标与 MRFAY 字标是 mrfay 自己的，
+                // 程序基于开源 SpektraLab（字标见 PersonalWordmark.swift）。
+                HStack(alignment: .center, spacing: 6) {
+                    if let mark = PersonalWordmark.image {
+                        Image(nsImage: mark)
+                            .resizable().interpolation(.high)
+                            .aspectRatio(PersonalWordmark.size, contentMode: .fit)
+                            .frame(height: 12)
+                            .accessibilityLabel("MRFAY")
+                    } else {
+                        Text("MRFAY").font(.system(size: 13, weight: .semibold, design: .serif))
+                    }
+                    Text("个人修改版").font(Theme.Font.sublabel).foregroundStyle(.secondary)
+                }
+                .padding(.top, 4)
+                Text("基于开源 SpektraLab 修改，非官方版本，未获原作者认可。")
+                    .font(Theme.Font.sublabel).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("“景到，在午有端，与景长，说在端。”——《墨子·经下》")
                     .font(Theme.Font.sublabel).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)

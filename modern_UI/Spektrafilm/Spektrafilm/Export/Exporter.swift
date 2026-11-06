@@ -105,8 +105,10 @@ enum Exporter {
     /// evidence of how each one was made, and a failure carries its own
     /// explanation rather than leaving a missing file and a shrug.
     static func export(session: Session, recipe: ExportRecipe,
-                       context: NamingRule.Context, sessionID: String) async throws -> Outcome {
+                       context: NamingRule.Context, sessionID: String,
+                       signatureAssets: SignatureAssetStore = .shared) async throws -> Outcome {
         guard let source = session.selection else { throw ExportError.nothingOpen }
+        if recipe.format == .di, recipe.signature.enabled { throw SignatureError.digitalIntermediate }
         // A pair with an empty hole is not exported (answer B9).
         if let pair = session.pair, !pair.isComplete { throw ExportError.incompletePair }
         let format = recipe.format
@@ -164,7 +166,8 @@ enum Exporter {
                 : try await exportPrint(session: session, to: out, format: format,
                                         quality: recipe.quality, recipe: recipe,
                                         sessionID: sessionID,
-                                        sourceEXIF: session.decoded?.sourceEXIF)
+                                        sourceEXIF: session.decoded?.sourceEXIF,
+                                        signatureAssets: signatureAssets)
             // The fallback's reason, if the route did not have one of its own.
             // Merged rather than set, because the DI route has a note of its
             // own (a film/paper mismatch) and losing it to a colour note would
@@ -387,9 +390,11 @@ enum Exporter {
 
         let (adjustedDestination, adjustedScratch) = try destination(width: full.width,
                                                                      height: full.height)
+        let exportGrade = session.exportAdjustments
         guard let adjusted = session.renderer.applyLayer2(to: full,
-                                                          uniforms: session.exportAdjustments.uniforms,
-                                                          into: adjustedDestination)
+                                                          uniforms: exportGrade.uniforms,
+                                                          into: adjustedDestination,
+                                                          hsl: exportGrade.enabled ? exportGrade.hsl : HSLAdjustments())
             else { throw ExportError.noPixels }
         var current = adjusted
         var currentScratch = adjustedScratch
@@ -470,9 +475,12 @@ enum Exporter {
     private static func exportPrint(session: Session, to out: URL, format: ExportFormat,
                                     quality: Double, recipe: ExportRecipe,
                                     sessionID: String,
-                                    sourceEXIF: [CFString: Any]?) async throws -> Result {
+                                    sourceEXIF: [CFString: Any]?,
+                                    signatureAssets: SignatureAssetStore) async throws -> Result {
         let r = try await filePixels(session: session, recipe: recipe, sessionID: sessionID)
-        guard let image = r.texture.makeCGImage(space: r.target) else { throw ExportError.noPixels }
+        guard let base = r.texture.makeCGImage(space: r.target) else { throw ExportError.noPixels }
+        let image = try SignatureCompositor.composite(base, settings: recipe.signature,
+                                                       assets: signatureAssets)
         let preview = writesPreviewPage(recipe) ? preview(of: image) : nil
         try write(image, to: out, format: format, quality: quality, preview: preview,
                   sourceEXIF: sourceEXIF)

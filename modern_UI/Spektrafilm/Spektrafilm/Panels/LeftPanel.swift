@@ -18,16 +18,19 @@ import SwiftUI
 
 struct LeftPanel: View {
     @Bindable var session: Session
+    @State private var panelOrder = PanelOrderStore.shared
+    @State private var showingOrder = false
 
-    /// The rail's sections, in order. A statement at a time, so the type
-    /// checker has no long expression to solve.
+    /// Build the default list, then apply the person's display order. Stable
+    /// keys keep each section's height and open state attached to that section.
     private var sections: [(String, AnyView)] {
         var s: [(String, AnyView)] = []
-        // A pair's own tool sits under the Navigator, and it has no crop
+        // A pair's own tool defaults under the Navigator, and it has no crop
         // section: each picture is cropped under its own hole.
         let isPair = session.pair != nil
         s.append(("navigator", AnyView(NavigatorSection(session: session))))
         if isPair { s.append((PairSection.key, AnyView(PairSection(session: session)))) }
+        s.append((FilmPaperPresetSection.key, AnyView(FilmPaperPresetSection(session: session))))
         s.append(("clipboard", AnyView(ClipboardSection(session: session))))
         s.append(("film", AnyView(FilmSection(session: session))))
         // Under Film, before Print: both belong to the film and depend on
@@ -37,13 +40,14 @@ struct LeftPanel: View {
         s.append(("print", AnyView(PrintProfileSection(session: session))))
         if !isPair { s.append(("crop", AnyView(CropSection(session: session)))) }
         s.append(("enlarger", AnyView(EnlargerSection(session: session))))
-        return s
+        return panelOrder.arranged(s, in: .left)
     }
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Hairline()
+            ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 0) {
                     let sections = sections
@@ -52,12 +56,20 @@ struct LeftPanel: View {
                     // against empty rail, not a separator.
                     ForEach(Array(sections.enumerated()), id: \.element.0) { index, entry in
                         if index > 0 { SectionDivider(above: sections[index - 1].0) }
-                        entry.1
+                        entry.1.workflowEntry(entry.0)
                     }
                 }
             }
+            .workflowFocus(.left, proxy: proxy)
+            }
         }
         .railCard()
+        .sheet(isPresented: $showingOrder) {
+            PanelOrderManagerSheet(initialGroup: .left, store: panelOrder)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .layoutReset)) { _ in
+            panelOrder.reset(.left)
+        }
     }
 
     private var header: some View {
@@ -76,6 +88,10 @@ struct LeftPanel: View {
         // The header row is the window's drag surface, as a sidebar header is
         // in Xcode.
         .background(WindowDragHandle())
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button(L("Show Edit Panels…", zh: "显示编辑面板…")) { showingOrder = true }
+        }
     }
 }
 

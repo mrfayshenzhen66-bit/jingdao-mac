@@ -185,6 +185,11 @@ struct EditorWindow: View {
                 .padding(.horizontal, Theme.Metric.barInset)
                 .padding(.vertical, Theme.Metric.barTop)
             Hairline(tier: .region)
+            // 景到 20.8: the beginner's steps, under the bar (`WorkflowGuide.swift`).
+            if WorkflowGuide.shared.visible {
+                WorkflowStepBar(session: session)
+                Hairline(tier: .region)
+            }
             CanvasArea(session: session)
             if !session.filmstripCollapsed {
                 Hairline(tier: .region)
@@ -307,6 +312,12 @@ struct CanvasArea: View {
                 .padding(20)
                 .background(Theme.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .shadow(color: .black.opacity(0.4), radius: 8)
+            }
+        }
+        // 景到 20.8: before there is a photograph, say how to start.
+        .overlay {
+            if session.selection == nil && session.serviceBlocked == nil && session.pair == nil {
+                CanvasEmptyGuide(session: session)
             }
         }
         .overlay(alignment: .bottomLeading) {

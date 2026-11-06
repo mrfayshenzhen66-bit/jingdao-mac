@@ -45,6 +45,27 @@ struct Vignette: Codable, Equatable, Sendable {
     var isNeutral: Bool { amount == 0 }
 }
 
+/// One of eight hue bands (景到). hue −100…100 (→ ±30°), saturation and
+/// luminance −100…100.
+struct HSLBand: Codable, Equatable, Sendable {
+    var hue: Double = 0
+    var saturation: Double = 0
+    var luminance: Double = 0
+}
+
+struct HSLAdjustments: Codable, Equatable, Sendable {
+    static let bandCount = 8
+    var bands = [HSLBand](repeating: HSLBand(), count: HSLAdjustments.bandCount)
+    var isNeutral: Bool { bands.allSatisfy { $0 == HSLBand() } }
+    subscript(index: Int) -> HSLBand {
+        get { bands.indices.contains(index) ? bands[index] : HSLBand() }
+        set {
+            if bands.count < Self.bandCount { bands += Array(repeating: HSLBand(), count: Self.bandCount - bands.count) }
+            bands[index] = newValue
+        }
+    }
+}
+
 struct Adjustments: Codable, Equatable, Sendable {
     var enabled: Bool = true
     // White balance, post-print (Capture One's model, but as an offset).
@@ -63,8 +84,39 @@ struct Adjustments: Codable, Equatable, Sendable {
     var curves = CurveSet()
     var colorBalance = ColorBalance()
     var vignette = Vignette()
+    /// Eight-band HSL (景到). Applied after Layer 2 by the `hslAdjust` kernel
+    /// on the canvas and in export; masks do not carry it.
+    var hsl = HSLAdjustments()
 
     static let `default` = Adjustments()
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled, temperature, tint, exposure, contrast, brightness, saturation
+        case highlights, shadows, blackPoint, whitePoint, curves, colorBalance, vignette, hsl
+    }
+    init() {}
+    init(enabled: Bool) { self.enabled = enabled }
+    /// Records written before a field existed keep decoding: every member
+    /// falls back to its neutral default.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = Adjustments()
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? d.enabled
+        temperature = try c.decodeIfPresent(Double.self, forKey: .temperature) ?? d.temperature
+        tint = try c.decodeIfPresent(Double.self, forKey: .tint) ?? d.tint
+        exposure = try c.decodeIfPresent(Double.self, forKey: .exposure) ?? d.exposure
+        contrast = try c.decodeIfPresent(Double.self, forKey: .contrast) ?? d.contrast
+        brightness = try c.decodeIfPresent(Double.self, forKey: .brightness) ?? d.brightness
+        saturation = try c.decodeIfPresent(Double.self, forKey: .saturation) ?? d.saturation
+        highlights = try c.decodeIfPresent(Double.self, forKey: .highlights) ?? d.highlights
+        shadows = try c.decodeIfPresent(Double.self, forKey: .shadows) ?? d.shadows
+        blackPoint = try c.decodeIfPresent(Double.self, forKey: .blackPoint) ?? d.blackPoint
+        whitePoint = try c.decodeIfPresent(Double.self, forKey: .whitePoint) ?? d.whitePoint
+        curves = try c.decodeIfPresent(CurveSet.self, forKey: .curves) ?? d.curves
+        colorBalance = try c.decodeIfPresent(ColorBalance.self, forKey: .colorBalance) ?? d.colorBalance
+        vignette = try c.decodeIfPresent(Vignette.self, forKey: .vignette) ?? d.vignette
+        hsl = try c.decodeIfPresent(HSLAdjustments.self, forKey: .hsl) ?? d.hsl
+    }
     var isNeutral: Bool { self == Adjustments(enabled: enabled) }
 
     /// The per-frame uniform block the shader reads. Computed on the CPU once

@@ -1,176 +1,48 @@
-# SpektraLab™
+# 景到 Jingdao
 
-**English** · [简体中文](README.zh-CN.md) · [spektralab.app](https://spektralab.app)
+**基于开源 [SpektraLab](https://github.com/JamesQiu2005/SpektraLab) 1.3.5 的非官方修改版**，macOS 胶片与相纸冲印模拟器。
+本项目不是 SpektraLab 官方发行，也未获得上游作者认可。上游原始说明见 [README.SpektraLab.md](README.SpektraLab.md)（English）与 [README.zh-CN.md](README.zh-CN.md)。
 
-A film and print simulator for macOS. Open a RAW, pick a film and a paper,
-and get a physically modelled print — grain, halation, couplers, the enlarger's
-filter pack — in about a second.
+> 名字出自《墨子·经下》：“景到，在午有端，与景长，说在端。”——光线穿过小孔，在另一侧成倒立的像。图标画的就是小孔成像。
 
-![SpektraLab: Lower Manhattan on Kodak Portra 160, printed on Kodak Vision 2383](screenshots/Screenshot_English.png)
+## 相比 SpektraLab 1.3.5 的改动
 
-- **Spectral, not a LUT.** Light is traced through 81 wavelengths, the film's
-  dye layers and the paper's, the way a darkroom does it.
-- **Physical units.** Tell it the negative is 120 or 35 mm and the grain,
-  halation and coupler diffusion scale with the frame in micrometres.
-- **Fast.** A C++ Metal engine compiled into the app: a 45 MP reprint in
-  ~0.01 s at preview size, a full-resolution render in under a second.
-- **One colour pipeline.** ProPhoto RGB throughout; each export is gamut-mapped
-  once into the space you ask for, and proofed before it is written.
-- **The film itself.** Film Edge prints the frame on its own strip — rebate,
-  perforations, each stock's edge print and frame numbers, measured on real
-  strips — in 135, half frame, XPan, 645 to 6×9, 6×12 and 6×17. Date Back
-  exposes a date onto the negative.
-- **Half-frame pairs.** Two frames on one piece of film, side by side or one
-  above the other, each with its own exposure, white balance, print and grade.
-- **Scriptable.** `spektralab` (CLI) and an MCP server drive the same session
-  the window does. Off until enabled in Settings.
-
-| RAW decode ⟷ film and paper (⌥\\) | grain at 1:1 |
+| 版本 | 内容 |
 |---|---|
-| ![Before and after](screenshots/natural_halation.png) | ![Grain at 1:1](screenshots/physically_accurate_grain.png) |
+| 20.6 | 拖动调色更跟手：渲染调度等待缩短，新编辑会取消正在进行的原分辨率渲染 |
+| 20.7 | 改名“景到”，小孔成像图标 |
+| 20.8 | 新手引导：空白页提示、顶部步骤条（选胶片 → 选相纸 → 放大机 → 微调 → 导出） |
+| 20.9 | 旋转按钮、界面中文化、关于页字标、自愿打赏窗口 |
+| 21.0 | 胶片分段缓存：拖动胶片曝光、颗粒、DIR 时预览更快（Apple M4 实测约 4.7 → 6.0 次/秒），导出画质不变 |
+| 21.1 | 显影后新增 **HSL**（红橙黄绿青蓝紫洋红 × 色相/饱和度/明度）；“色彩平衡”改名“色彩平衡 · 色轮” |
 
-## Install
+另有：胶片与相纸组合预设、导出配方记忆、透明 PNG 签名图层、栏目排序管理、中文菜单等。
 
-Download the DMG from [spektralab.app](https://spektralab.app) or
-[Releases](https://github.com/JamesQiu2005/SpektraLab/releases), open it and
-drag SpektraLab to Applications. It is signed with a Developer ID and
-notarised by Apple, so it opens like any other app.
+## 获取与构建
 
-Apple silicon, macOS 15 or later.
+本仓库**只提供源码**，不提供安装包。构建方法见 [PERSONAL-BUILD.txt](PERSONAL-BUILD.txt)，简要步骤：
 
-Releases before 1.3.3 are ad-hoc signed. For one of those, clear the
-quarantine once:
+1. 准备 Apple 芯片 Mac（macOS 15 或更高）与 Xcode / Command Line Tools。
+2. 安装官方 SpektraLab 1.3.5 到 `/Applications/SpektraLab.app`（构建脚本会读取其中未修改的官方资源）。
+3. 在本仓库根目录运行：
 
-```bash
-xattr -d -r com.apple.quarantine /Applications/SpektraLab.app
-```
+   ```sh
+   cd modern_UI/Spektrafilm
+   Tools/build-personal.sh
+   ```
 
-## Select and sync photos
+   产物为本地 ad-hoc 签名的 `景到.app`。
 
-Click a photo to make it the current photo, then Command-click other photos to
-add or remove them without moving the current photo. Command+A (Edit → Select
-All Photos) selects the library and keeps the current photo as the sync source.
-In a newly opened folder it opens the first photo. Command+A inside a text field
-still selects text.
+构建脚本会核对官方 1.3.5 基线：引擎资源、着色器库和胶片数据与官方保持一致，只允许 `engine/src/pipeline` 下三个 C++ 文件不同。21.1 的 HSL 着色器写在 `Canvas/HSLKernel.swift`，运行时编译，不改动官方着色器库。
 
-Under Settings Clipboard, tick the groups to transfer and choose **Sync to N**
-(or Edit → Sync Settings). This reads the current photo's latest edits, preserves
-the clipboard and source photo, and saves the other selected photos immediately.
-They develop with those settings when opened. Crop, Post-Dev adjustments, lens
-correction, Film Edge and Date Back stay with each photo, following the existing
-clipboard rules. As Shot white balance and fitted Scene Placement are resolved
-for each target. Sync has no batch undo; the status reports writes and failures.
-Selection and sync are disabled during batch export.
+## 许可与致谢
 
-## Film Edge, Date Back and half-frame pairs
+- 应用与引擎：GPL-3.0-or-later（见 [LICENSE.txt](LICENSE.txt)）。
+- 胶片/相纸配置与 LUT：CC BY-SA 4.0，来源 [spektrafilm](https://github.com/andreavolpato/spektrafilm)（Andrea Volpato）。
+- 原作者：SpektraLab，[JamesQiu2005/SpektraLab](https://github.com/JamesQiu2005/SpektraLab)。
+- SpektraLab 名称与图标归上游所有，景到的名称和图标不含上游名称、Logo 或其衍生图形。
+- 打赏码原图不在仓库中；应用内的打赏窗口完全自愿，不解锁任何功能，收款人是本修改版作者，与上游作者无关。
 
-**Film Edge** (left rail) turns the canvas into the film: pick a format and the
-frame is cut to its gate and shown on the strip, with the stock's own edge
-print and a frame number you can set; a strip scan ends at the film's edges.
-The crop becomes the framing in the gate, so it is part of the
-negative. **Date Back** exposes the shooting date (or a date you type) into the
-frame; it needs no film edge. With one, it can print the shooting data beside
-the frame at the same time, and on 120 (645 to 6×9) the date and the data go
-in the film margin, where a medium-format back printed them.
+## 联系
 
-**A half-frame pair** is two frames on one frame's worth of 135. With Film Edge
-on *Half*, **Enter Half-Frame Pair** appears under the format (or pick two
-photos and press ⌘J). The canvas shows two holes; an empty one has a **+**.
-Click a hole to pick its frame: Input / Camera, Scene Placement, the Enlarger
-and Post-Dev then act on that frame alone, and *+ Film* moves the film around
-it too. Right-click a hole to replace, turn or crop its frame. In the crop
-mode, drag moves the picture under its hole and scroll or pinch scales it about
-the pointer. A pair is one item in the filmstrip and exports as one picture.
-
-Drag a thumbnail along the filmstrip to reorder a folder; the order is kept for
-that folder. A file dropped from Finder still opens and edits.
-
-## Build
-
-Xcode 26.6.
-
-```bash
-engine/build.sh bundle                 # engine, kernels, baked resources
-cd modern_UI/Spektrafilm
-xcodebuild -project Spektrafilm.xcodeproj -scheme Spektrafilm \
-           -derivedDataPath build/DerivedData build
-```
-
-Re-run `engine/build.sh bundle` whenever `engine/resources/` changes. If Xcode
-suddenly cannot find `metal`, clean the build folder (⇧⌘K): the Metal
-toolchain's mount path changed under a cached build.
-
-## Test
-
-```bash
-xcodebuild -project Spektrafilm.xcodeproj -scheme SpektrafilmTests \
-           -derivedDataPath build/DerivedData test       # ~550 tests, ~6 min
-```
-
-Camera fixtures come from the upstream `spektrafilm` repository through a
-`tests` symlink (`ln -s ../spektrafilm/tests tests`). Without it 25 cases skip
-and the run still reports 0 failures in ~20 s — trust the duration.
-
-## Layout
-
-| | |
-|---|---|
-| `modern_UI/Spektrafilm/` | the app: SwiftUI, AppKit, Metal |
-| `engine/` | the C++20 render engine, its MSL kernels and C ABI |
-| `engine/resources/` | baked constants, 28 film and paper profiles, print LUTs |
-| `ARCHITECTURE.md` | how it fits together — start here |
-| `AGENTS.md` | conventions and the traps that cost real time |
-
-## Windows development
-
-This branch also contains a C++/Vulkan backend, native LibRaw decoding,
-RGB16 TIFF export and Windows desktop viewers.
-See the [Windows build guide](engine/WINDOWS.md) and
-[feature coverage](engine/WINDOWS_FEATURE_COVERAGE.md) for the tested scope.
-The [Qt Quick frontend](windows_UI/README.md) brings the film/print editor layout
-to Windows; the [minimal Win32 viewer](engine/WINDOWS_DESKTOP.md) is also retained.
-The macOS product described above has additional interface and display features.
-
-## Contributing
-
-Pull requests are welcome. Three rules:
-
-- **Windows and Linux work goes to the `Windows_Linux` branch, never to `main`.**
-  `main` is the macOS product; a Windows- or Linux-related pull request against
-  it will be closed and asked to retarget.
-- **Split your work into reviewable commits.** One commit per change, each with
-  a message that says what it does and why. A single commit that dumps a whole
-  feature, a rename and a reformat together cannot be reviewed and will not be
-  merged.
-- **Respect the open-source community.** Keep the licences and credits intact
-  (see below), credit the work you build on, and be civil in issues and reviews.
-
-## Credits and licence
-
-The film process model, its 28 measured color profiles and the print LUTs are
-[spektrafilm](https://github.com/andreavolpato/spektrafilm) by Andrea Volpato;
-4 new measured B&W profiles are by Hanze Qiu;
-SpektraLab is a native C++/Metal port of that engine and the application built
-around it.
-
-| | |
-|---|---|
-| app and engine | GPL-3.0-or-later |
-| film and paper profiles, print LUTs | CC BY-SA 4.0 |
-| metal-cpp | Apache-2.0 |
-
-All texts ship inside the app, under **SpektraLab → About SpektraLab**.
-
-## Trademark
-
-SpektraLab™ and the SpektraLab icon are managed by Guangzhou Songzi Intelligent
-Technology Services Co., Ltd.; trademark registration is in progress.
-
-Forks are welcome. You can study, modify, port and redistribute the code under
-its licences, which cover the code and data but not the name or the icon. Keeping
-both in a personal fork is fine. If you publish a build for other people, even a
-free one, please give it its own name and icon. You are welcome to say it is
-based on SpektraLab, as long as it is clear that your project is unofficial.
-
-We reserve the right to act against builds that pass themselves off as official
-or imply our endorsement.
+mrfay · mrfayshenzhen66@gmail.com

@@ -116,3 +116,61 @@ struct ColorBalanceSection: View {
         }
     }
 }
+
+/// 景到 HSL: eight hue bands, each with hue, saturation and luminance. Runs
+/// after Layer 2 (`hslAdjust`) on the canvas and in export.
+struct HSLSection: View {
+    @Bindable var session: Session
+    @State private var band = 0
+    static let names = ["红", "橙", "黄", "绿", "青", "蓝", "紫", "洋红"]
+    static let englishNames = ["Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple", "Magenta"]
+    static let hues: [Double] = [0, 30, 60, 120, 180, 240, 270, 300]
+    var body: some View {
+        PanelSection("HSL", key: "hsl", initiallyExpanded: false, menu: { AnyView(Button(L(.helpReset)) {
+            var a = session.layerAdjustments; a.hsl = HSLAdjustments(); session.layerAdjustments = a }) }, metrics: .right) {
+            RailRows {
+                HStack(spacing: 0) {
+                    ForEach(0..<Self.names.count, id: \.self) { index in
+                        let edited = session.layerAdjustments.hsl[index] != HSLBand()
+                        Button { band = index } label: {
+                            VStack(spacing: 3) {
+                                Circle().fill(Self.swatch(index)).frame(width: 16, height: 16)
+                                    .overlay(Circle().strokeBorder(Color.white, lineWidth: band == index ? 2 : 0))
+                                    .overlay(alignment: .topTrailing) {
+                                        if edited { Circle().fill(Theme.accent).frame(width: 5, height: 5).offset(x: 2, y: -2) }
+                                    }
+                                Text(L(Self.englishNames[index], zh: Self.names[index]))
+                                    .font(Theme.Font.caption)
+                                    .foregroundStyle(band == index ? Theme.text : Theme.dim)
+                                    .lineLimit(1).minimumScaleFactor(0.7)
+                            }.frame(maxWidth: .infinity).contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                            .help(L(Self.englishNames[index], zh: Self.names[index]))
+                    }
+                }
+                ScrubSlider(label: L("Hue", zh: "色相"), value: value(\.hue), range: -100...100, snap: 5,
+                            format: { String(format: "%+.0f", $0) },
+                            trackGradient: [shifted(-30), Self.swatch(band), shifted(30)])
+                ScrubSlider(label: L("Saturation", zh: "饱和度"), value: value(\.saturation), range: -100...100, snap: 5,
+                            format: { String(format: "%+.0f", $0) },
+                            trackGradient: [Color(white: 0.5), Self.swatch(band)])
+                ScrubSlider(label: L("Luminance", zh: "明度"), value: value(\.luminance), range: -100...100, snap: 5,
+                            format: { String(format: "%+.0f", $0) },
+                            trackGradient: [Color(white: 0.12), Self.swatch(band), Color(white: 0.95)])
+            }
+        }
+    }
+    private static func swatch(_ index: Int) -> Color {
+        Color(hue: hues[index] / 360, saturation: 0.75, brightness: 0.9)
+    }
+    /// The band's colour turned by the slider's ±30° reach, for the hue track.
+    private func shifted(_ degrees: Double) -> Color {
+        let hue = (Self.hues[band] + degrees + 360).truncatingRemainder(dividingBy: 360)
+        return Color(hue: hue / 360, saturation: 0.75, brightness: 0.9)
+    }
+    private func value(_ key: WritableKeyPath<HSLBand, Double>) -> Binding<Double> {
+        let index = band
+        return Binding(get: { session.layerAdjustments.hsl[index][keyPath: key] },
+                       set: { var a = session.layerAdjustments; a.hsl[index][keyPath: key] = $0; session.layerAdjustments = a })
+    }
+}

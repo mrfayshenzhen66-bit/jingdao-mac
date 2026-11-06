@@ -218,6 +218,10 @@ struct spk_session {
         /// so a reprint can lay it out again. Zero without overscan.
         uint32_t overscan_frame_w = 0, overscan_frame_h = 0;
         std::optional<double> applied_ev;   // what the node applied to `negative`
+        /// 景到 personal build: the live tier's post-blur plane
+        /// (`Pipeline::FilmCache`). Lives and dies with this state, so a
+        /// preview-size change or a frame release drops it with the image.
+        Pipeline::FilmCache film_cache;
     };
     std::unordered_map<std::string, TierState> tiers;
 
@@ -1079,6 +1083,35 @@ bool run_print_for(spk_session* session, const Image& negative, Image& rgb,
     return session->pipeline->run_print(negative, rgb, progress, error);
 }
 
+// 景到 personal build: the wire fields that can change the film side's
+// post-blur plane. Print-layer fields cannot (a print edit reuses the whole
+// negative, which is the schema's own contract; `preview_long_edge` resets
+// the tier instead). Of the shoot layer, the fields below are read only by
+// `film_log_and_curves`, `film_couplers` and `film_grain` or the bakes they
+// use (curve gamma, coupler matrix, grain layers) -- or, for grain_active, by
+// the seed draw in `film_prefix`, which runs on every path. The exposure
+// gain is keyed by the pipeline itself (it may be rescaled instead).
+static std::string film_cache_key(const Params& params) {
+    static const char* const kDownstream[] = {
+        "grain_active", "grain_sublayers_active", "grain_amount",
+        "dir_couplers_active", "dir_couplers_amount", "density_curve_gamma",
+        "exposure_compensation_ev",
+    };
+    const Json values = read_params(params);
+    std::string key;
+    for (const SchemaField& f : schema_fields()) {
+        if (f.layer == Layer::Print) continue;
+        bool skip = false;
+        for (const char* d : kDownstream) skip |= std::strcmp(d, f.name) == 0;
+        if (skip) continue;
+        key += f.name;
+        key += '=';
+        key += values.at(f.name).dump();
+        key += ';';
+    }
+    return key;
+}
+
 bool negative_for(spk_session* session, const Tier& tier, Progress* progress, Image& out,
                   std::string& error) {
     spk_session::TierState& state = session->tiers[tier.name];
@@ -1096,7 +1129,21 @@ bool negative_for(spk_session* session, const Tier& tier, Progress* progress, Im
         camera.auto_exposure ? std::optional<double>(session->meter.evs.of(camera.auto_exposure_method))
                              : std::nullopt);
     Image negative;
-    if (!run_film_for(session, source, negative, progress, error)) return false;
+    // 景到 personal build: the live tier -- every slider drag -- goes through
+    // the post-blur cache; the other tiers render once per settled edit and
+    // keep the exact path (and their memory).
+    // `JINGDAO_FILM_CACHE_OFF` set: the exact pre-cache path, for A/B checks
+    // and as a field kill switch.
+    if (std::strcmp(tier.name, "live") == 0 && !session->params.settings.striped &&
+        std::getenv("JINGDAO_FILM_CACHE_OFF") == nullptr) {
+        if (!session->pipeline->run_film_cached(source, negative, progress, state.film_cache,
+                                                film_cache_key(session->params), error)) {
+            state.film_cache = Pipeline::FilmCache{};
+            return false;
+        }
+    } else if (!run_film_for(session, source, negative, progress, error)) {
+        return false;
+    }
     state.applied_ev = session->pipeline->last_auto_exposure_ev();
     session->pipeline->overscan_frame(state.overscan_frame_w, state.overscan_frame_h);
     if (progress) progress->auto_exposure_ev = state.applied_ev;

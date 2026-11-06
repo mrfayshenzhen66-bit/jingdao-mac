@@ -73,6 +73,10 @@ struct ExportPage: View {
     /// back: it describes one file that exists, and the next keystroke is
     /// about to make a different one.
     @State private var filePreview: CGImage?
+    @State private var signatureImage: CGImage?
+    @State private var signatureAssetProblem: String?
+    @State private var signaturePreviewProblem: String?
+    @State private var signatureControlDraft: SignatureSettings?
 
     @State private var running = false
     /// The batch in flight, kept so Stop can cancel it.
@@ -97,7 +101,9 @@ struct ExportPage: View {
     /// off them (`Theme.Metric.Export.labelWidth(fitting:)`). A label added to
     /// a row goes here too; `LayoutTests` checks the column holds them all.
     @MainActor static var columnLabels: [String] { [L("Folder", zh: "文件夹"), L("Subfolder", zh: "子文件夹"), L("Existing File", zh: "已有文件"), L("Format", zh: "格式"), L("File name", zh: "文件名"),
-                               L("Color Space", zh: "色彩空间"), L("Quality", zh: "质量"), L("Size", zh: "尺寸"), L("Open With", zh: "打开方式"), L("Preview", zh: "预览")] }
+                               L("Color Space", zh: "色彩空间"), L("Quality", zh: "质量"), L("Size", zh: "尺寸"), L("Open With", zh: "打开方式"), L("Preview", zh: "预览"),
+                               L("On Open", zh: "打开时"), L("Default", zh: "默认配方"),
+                               L("Signature", zh: "签名"), L("Width", zh: "宽度"), L("Opacity", zh: "不透明度")] }
 
     /// The label column: wide enough for the widest label at the scale in use.
     @MainActor static var labelColumn: CGFloat { M.labelWidth(fitting: columnLabels) }
@@ -177,9 +183,21 @@ struct ExportPage: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear {
             mode = startIn
+            guard !running && !session.batchExporting else { return }
+            store.restoreSelection()
         }
         .task(id: proofKey) { await makeProof() }
         .task(id: recipe.wrappedValue.format) { OpenWithCatalog.refresh(for: recipe.wrappedValue.format) }
+        .task(id: recipe.wrappedValue.signature.asset?.id) { loadSignatureImage() }
+        .onChange(of: recipe.wrappedValue.signature) { _, _ in filePreview = nil }
+        .onChange(of: recipe.wrappedValue.id) { _, _ in
+            signatureControlDraft = nil
+            signaturePreviewProblem = nil
+        }
+        .onChange(of: running || session.batchExporting) { _, locked in
+            if locked { signatureControlDraft = nil }
+        }
+        .onChange(of: recipe.wrappedValue.format) { _, _ in signatureControlDraft = nil }
     }
 
     // MARK: - the worklist
@@ -308,7 +326,7 @@ struct ExportPage: View {
         // showing the previous proof, which is a truer thing to look at than a
         // picture of a recipe the person has moved on from.
         let made = await session.softProofForDisplay(recipe: recipe.wrappedValue,
-                                                     paneSize: paneSize)
+                                                     paneSize: paneSize, includeSignature: false)
         guard !Task.isCancelled else { return }
         // An edit puts the render back: `filePreview` describes one file that
         // exists, and this key changing means the next one will not be it.
@@ -503,6 +521,7 @@ struct ExportPage: View {
                          ("location", AnyView(locationSection)),
                          ("naming", AnyView(namingSection)),
                          ("format", AnyView(formatSection)),
+                         ("signature", AnyView(signatureSection)),
                          ("summary", AnyView(summarySection))]
                     ForEach(Array(sections.enumerated()), id: \.element.0) { index, entry in
                         if index > 0 { Hairline() }
@@ -557,6 +576,17 @@ struct ExportPage: View {
             Button(L("Delete", zh: "删除")) { if let s = store.selected { store.remove(s) } }
                 .disabled(store.recipes.count < 2)
             Divider()
+            Button(L("Set Current Recipe as Default", zh: "将当前配方设为默认")) {
+                guard !running && !session.batchExporting else { return }
+                store.setCurrentAsDefault()
+            }
+            .disabled(running || session.batchExporting || store.selected == nil)
+            Button(L("Use Last Selection on Open", zh: "改为沿用上次选择")) {
+                guard !running && !session.batchExporting else { return }
+                store.openingBehavior = .lastUsed
+            }
+            .disabled(running || session.batchExporting)
+            Divider()
             Button(L("Reveal Recipes File in Finder", zh: "在访达中显示配方文件")) {
                 NSWorkspace.shared.activateFileViewerSelecting([store.url])
             }
@@ -564,7 +594,8 @@ struct ExportPage: View {
             // The list is inset 1 pt from the well's own edge rather than by
             // `wellPadding`: the drawing's chosen row is 2 units in from the
             // well edge, not from its content box.
-            Well(padding: 1, vertical: 6, inset: M.wellInset) {
+            VStack(spacing: 0) {
+              Well(padding: 1, vertical: 6, inset: M.wellInset) {
                 VStack(spacing: 0) {
                     ScrollView {
                         VStack(spacing: M.recipeRowSpacing) {
@@ -589,6 +620,57 @@ struct ExportPage: View {
                     }
                     .padding(.trailing, 16)
                 }
+              }
+              openingPreferences
+            }
+        }
+    }
+
+    private var openingPreferences: some View {
+        Well(padding: M.wellPadding, vertical: M.wellVertical, inset: M.wellInset, fill: false) {
+            VStack(alignment: .leading, spacing: M.rowSpacing) {
+                row(L("On Open", zh: "打开时")) {
+                    PillField(title: store.openingBehavior == .lastUsed
+                              ? L("Last used", zh: "沿用上次选择")
+                              : L("Fixed default", zh: "使用固定默认"),
+                              dimmed: running || session.batchExporting, font: F.label,
+                              help: L("Choose which recipe to select when the export page opens.",
+                                      zh: "选择每次打开导出页面时采用的配方。")) {
+                        Button(L("Use Last Selection", zh: "沿用上次选择")) {
+                            guard !running && !session.batchExporting else { return }
+                            store.openingBehavior = .lastUsed
+                        }
+                        Button(L("Use a Fixed Default", zh: "使用固定默认")) {
+                            guard !running && !session.batchExporting else { return }
+                            store.openingBehavior = .fixedDefault
+                        }
+                    }
+                    .lineLimit(1)
+                }
+                if store.openingBehavior == .fixedDefault {
+                    row(L("Default", zh: "默认配方")) {
+                        PillField(title: store.defaultRecipe?.name ?? L("Choose a Recipe", zh: "选择配方"),
+                                  dimmed: running || session.batchExporting, font: F.label,
+                                  help: store.defaultRecipe?.name) {
+                            ForEach(store.recipes) { candidate in
+                                Button(candidate.name) {
+                                    guard !running && !session.batchExporting else { return }
+                                    store.defaultRecipeID = candidate.id
+                                }
+                            }
+                        }
+                        .lineLimit(1)
+                    }
+                }
+                Text(store.openingBehavior == .lastUsed
+                     ? L("Restore the last selected or exported recipe when this page opens.",
+                         zh: "下次打开会恢复上次选择或导出的配方。")
+                     : L("Choosing another recipe temporarily keeps this default. The next time you open this page, the default will be selected.",
+                         zh: "临时选择其他配方不会更改固定默认；下次打开仍采用默认配方。"))
+                    .font(F.value)
+                    .foregroundStyle(Theme.Ink.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -630,12 +712,20 @@ struct ExportPage: View {
     /// rounded plate of its own inside the band.
     private func recipeRow(_ r: ExportRecipe) -> some View {
         let on = r.id == store.selected?.id
-        return Text(r.name)
-            .font(F.listItem)
-            .foregroundStyle(on ? Theme.onSelection : Theme.Ink.secondary)
-            // A recipe's name is the user's; it wraps rather than truncates.
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        return HStack(spacing: 6) {
+            Text(r.name)
+                .font(F.listItem)
+                .foregroundStyle(on ? Theme.onSelection : Theme.Ink.secondary)
+                // A recipe's name is the user's; it wraps rather than truncates.
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if store.openingBehavior == .fixedDefault && store.defaultRecipeID == r.id {
+                Image(systemName: "star.fill")
+                    .font(F.value)
+                    .foregroundStyle(on ? Theme.onSelection : Theme.Ink.secondary)
+                    .help(L("Fixed default recipe", zh: "固定默认配方"))
+            }
+        }
             .padding(.leading, 15)
             .padding(.trailing, 8)
             .frame(minHeight: M.recipeRowHeight)
@@ -1140,6 +1230,172 @@ struct ExportPage: View {
         }
     }
 
+    // MARK: - the signature saved with this recipe
+
+    private var signatureLocked: Bool { running || session.batchExporting }
+    private var signatureCanEdit: Bool { !signatureLocked && recipe.wrappedValue.format != .di }
+    private var activeSignature: SignatureSettings { signatureControlDraft ?? recipe.wrappedValue.signature }
+    private var previewSignature: SignatureSettings {
+        var value = activeSignature
+        if recipe.wrappedValue.format == .di { value.enabled = false }
+        return value
+    }
+    private var signatureControlsEnabled: Bool {
+        signatureCanEdit && activeSignature.enabled && signatureImage != nil
+    }
+
+    private var signatureSection: some View {
+        PanelSection(L("Signature", zh: "签名"), key: "exportSignature", menu: sectionMenu {
+            Button(L("Reset Position", zh: "重置位置")) {
+                guard signatureCanEdit else { return }
+                var value = activeSignature
+                value.centerX = 0.8; value.centerY = 0.9
+                commitSignature(value)
+            }
+            .disabled(!signatureControlsEnabled)
+            Button(L("Remove Signature", zh: "移除签名")) {
+                guard !signatureLocked else { return }
+                var value = recipe.wrappedValue.signature
+                value.enabled = false; value.asset = nil
+                commitSignature(value)
+            }
+            .disabled(signatureLocked || recipe.wrappedValue.signature.asset == nil)
+        }, metrics: Self.sectionMetrics) {
+            Well(padding: M.wellPadding, vertical: M.wellVertical, inset: M.wellInset, fill: false) {
+                VStack(alignment: .leading, spacing: M.rowSpacing) {
+                    row(L("Signature", zh: "签名")) {
+                        CheckBox(isOn: Binding(get: { activeSignature.enabled }, set: { on in
+                            guard !signatureLocked, !on || signatureCanEdit else { return }
+                            var value = activeSignature
+                            value.enabled = on
+                            commitSignature(value)
+                        }))
+                        // A DI recipe may have inherited an enabled layer.
+                        // It must still be possible to turn that layer off.
+                        .disabled(signatureLocked || (!activeSignature.enabled
+                            && (!signatureCanEdit || activeSignature.asset == nil)))
+                        .accessibilityLabel(L("Enable signature", zh: "启用签名"))
+                    }
+                    HStack {
+                        Button { importSignature() } label: {
+                            Text(L("Import PNG…", zh: "导入 PNG…"))
+                                .font(F.label).foregroundStyle(Theme.text)
+                                .padding(.horizontal, 10)
+                                .frame(height: M.rowHeight)
+                                .background(Theme.pill, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!signatureCanEdit)
+                        .accessibilityLabel(L("Import signature PNG", zh: "导入签名 PNG"))
+                        Spacer(minLength: 0)
+                    }
+                    Text(activeSignature.asset?.name ?? L("No PNG imported", zh: "尚未导入 PNG"))
+                        .font(F.value).foregroundStyle(Theme.Ink.tertiary)
+                        .lineLimit(2).truncationMode(.middle)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .help(activeSignature.asset?.name ?? "")
+                    ScrubSlider(label: L("Width", zh: "宽度"),
+                                value: signatureNumber(\.widthFraction), range: 0.01...1,
+                                zero: 0.2, snap: 0.01,
+                                format: { String(format: "%.0f%%", $0 * 100) },
+                                parse: Self.signaturePercent,
+                                disabled: !signatureControlsEnabled, metrics: Self.sliderMetrics,
+                                onCommit: commitSignatureControls)
+                        .accessibilityLabel(L("Signature width", zh: "签名宽度"))
+                        .help(L("Signature width as a percentage of the finished photo's width.",
+                                zh: "签名宽度占最终照片宽度的百分比。"))
+                    ScrubSlider(label: L("Opacity", zh: "不透明度"),
+                                value: signatureNumber(\.opacity), range: 0...1,
+                                zero: 1, snap: 0.01,
+                                format: { String(format: "%.0f%%", $0 * 100) },
+                                parse: Self.signaturePercent,
+                                disabled: !signatureControlsEnabled, metrics: Self.sliderMetrics,
+                                onCommit: commitSignatureControls)
+                        .accessibilityLabel(L("Signature opacity", zh: "签名不透明度"))
+                    Text(recipe.wrappedValue.format == .di
+                         ? L("Digital Intermediate does not support signatures. Turn the signature off or choose JPEG, PNG or TIFF.",
+                             zh: "数字中间片不支持签名。请关闭签名，或选择 JPEG、PNG、TIFF。")
+                         : L("Drag the signature on the preview to position it. Width is relative to the photo; these settings are saved with this recipe.",
+                             zh: "在预览图中拖动签名调整位置。宽度按照片宽度计算，设置随此配方保存。"))
+                        .font(F.value).foregroundStyle(Theme.Ink.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if mode == .grid && activeSignature.enabled {
+                        Button(L("Position in Viewer", zh: "在查看器中调整位置")) { mode = .viewer }
+                            .buttonStyle(.plain)
+                            .font(F.value).foregroundStyle(Theme.exportAccent)
+                            .disabled(!signatureCanEdit)
+                    }
+                }
+            }
+        }
+    }
+
+    private static func signaturePercent(_ text: String) -> Double? {
+        Double(text.replacingOccurrences(of: "%", with: "")
+            .replacingOccurrences(of: "％", with: "")
+            .replacingOccurrences(of: ",", with: ".")
+            .trimmingCharacters(in: .whitespacesAndNewlines)).map { $0 / 100 }
+    }
+
+    private func signatureNumber(_ keyPath: WritableKeyPath<SignatureSettings, Double>) -> Binding<Double> {
+        Binding(get: { activeSignature[keyPath: keyPath] }, set: { value in
+            guard signatureControlsEnabled else { return }
+            var draft = activeSignature
+            draft[keyPath: keyPath] = value
+            signatureControlDraft = draft
+            filePreview = nil
+        })
+    }
+
+    private func commitSignatureControls() {
+        guard let draft = signatureControlDraft else { return }
+        commitSignature(draft)
+    }
+
+    private func commitSignature(_ value: SignatureSettings) {
+        guard !signatureLocked, !value.enabled || signatureCanEdit else { return }
+        signatureControlDraft = nil
+        filePreview = nil
+        recipe.wrappedValue.signature = value
+    }
+
+    private func importSignature() {
+        guard signatureCanEdit else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png]
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = L("Import", zh: "导入")
+        panel.message = L("Choose a PNG signature with a transparent background.", zh: "选择透明背景的 PNG 签名图片。")
+        guard panel.runModal() == .OK, let url = panel.url, signatureCanEdit else { return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let asset = try SignatureAssetStore.shared.importPNG(from: url)
+            let image = try SignatureAssetStore.shared.image(for: asset)
+            var value = recipe.wrappedValue.signature
+            value.asset = asset; value.enabled = true
+            commitSignature(value)
+            signatureImage = image
+            signatureAssetProblem = nil
+        } catch {
+            signatureAssetProblem = L("Could not import the signature: \(error.localizedDescription)",
+                                      zh: "签名导入失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func loadSignatureImage() {
+        signatureImage = nil
+        signatureAssetProblem = nil
+        guard let asset = recipe.wrappedValue.signature.asset else { return }
+        do { signatureImage = try SignatureAssetStore.shared.image(for: asset) }
+        catch {
+            signatureAssetProblem = L("Could not load the signature: \(error.localizedDescription)",
+                                      zh: "签名读取失败：\(error.localizedDescription)")
+        }
+    }
+
     private var summarySection: some View {
         // **Open by default.** It was shut, which put the one view that
         // states the whole recipe in one place behind a click, and left the
@@ -1175,6 +1431,13 @@ struct ExportPage: View {
     private var footer: some View {
         VStack(spacing: 6) {
             if let problem = store.problem { message(problem, warning: true) }
+            if let problem = signatureAssetProblem { message(problem, warning: true) }
+            if let problem = signaturePreviewProblem { message(problem, warning: true) }
+            if let problem = store.selectionProblem {
+                message(L("Could not read or save the recipe opening preference.",
+                          zh: "导出配方的打开设置无法读取或保存。"), warning: true)
+                if !problem.isEmpty { message(problem, warning: true) }
+            }
             if let note { message(note.text, warning: note.warning) }
             HStack(spacing: 8) {
                 if running, let p = session.exportProgress {
@@ -1304,10 +1567,15 @@ struct ExportPage: View {
             ScrollView([.horizontal, .vertical]) {
                 ZStack {
                     if let shown = displayImage {
-                        Image(decorative: shown, scale: 1)
-                            .resizable()
-                            .interpolation(.high)
-                            .frame(width: fitted.width * zoom, height: fitted.height * zoom)
+                        SignatureOverlayView(baseImage: shown, signatureImage: signatureImage,
+                            settings: previewSignature,
+                            displaySize: CGSize(width: fitted.width * zoom, height: fitted.height * zoom),
+                            alreadyComposited: filePreview != nil,
+                            editable: signatureCanEdit,
+                            onEditingBegan: { filePreview = nil },
+                            onCommit: { commitSignature($0) },
+                            onProblem: { signaturePreviewProblem = $0 })
+                            .id(recipe.wrappedValue.id)
                     } else if proving {
                         VStack(spacing: 8) {
                             ProgressView().controlSize(.small)
@@ -1660,6 +1928,7 @@ struct ExportPage: View {
     /// another's name.
     private func run() {
         guard let r = store.selected, !batch.isEmpty, !running else { return }
+        store.selectedID = r.id
         running = true
         session.batchExporting = true
         note = nil

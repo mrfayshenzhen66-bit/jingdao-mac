@@ -548,6 +548,8 @@ struct ExportRecipe: Codable, Identifiable, Hashable, Sendable {
     /// Hand the finished files to this application. `nil` is "None", which is
     /// the default and opens nothing.
     var openWith: OpenWith?
+    /// Final transparent PNG overlay, saved independently with each recipe.
+    var signature = SignatureSettings()
 
     /// Read leniently for the same reason `NamingRule.init(from:)` does: a
     /// recipe file written by an earlier build is missing every field added
@@ -567,13 +569,15 @@ struct ExportRecipe: Codable, Identifiable, Hashable, Sendable {
         outputSize = (try? c.decode(OutputSize.self, forKey: .outputSize)) ?? .original
         embedsPreview = (try? c.decode(Bool.self, forKey: .embedsPreview)) ?? false
         openWith = try? c.decodeIfPresent(OpenWith.self, forKey: .openWith)
+        signature = try c.decodeIfPresent(SignatureSettings.self, forKey: .signature) ?? SignatureSettings()
     }
 
     init(id: UUID = UUID(), name: String = "Untitled", format: ExportFormat = .jpeg,
          colorSpace: ExportColorSpace = .displayP3, folder: ExportFolder = .besideOriginal,
          subfolder: String = "_prints", naming: NamingRule = NamingRule(),
          existing: ExistingFilePolicy = .addSuffix, quality: Double = 0.95,
-         outputSize: OutputSize = .original, openWith: OpenWith? = nil) {
+         outputSize: OutputSize = .original, openWith: OpenWith? = nil,
+         signature: SignatureSettings = SignatureSettings()) {
         self.id = id
         self.name = name
         self.format = format
@@ -585,11 +589,12 @@ struct ExportRecipe: Codable, Identifiable, Hashable, Sendable {
         self.quality = quality
         self.outputSize = outputSize
         self.openWith = openWith
+        self.signature = signature
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, format, colorSpace, folder, subfolder, naming, existing, quality,
-             outputSize, openWith, embedsPreview
+             outputSize, openWith, embedsPreview, signature
     }
 
     /// The directory this recipe writes into for a given source frame,
@@ -704,6 +709,18 @@ struct ExportRecipe: Codable, Identifiable, Hashable, Sendable {
 
 // MARK: - the store
 
+enum ExportOpeningBehavior: String, CaseIterable, Sendable {
+    case lastUsed, fixedDefault
+}
+
+/// Keep the recipe array readable by the official app. Selection preferences
+/// are a separate small document beside it, keyed by identity rather than a
+/// mutable name or a position in the list.
+private struct ExportSelectionPreferences: Codable {
+    var lastSelectedID: UUID?
+    var defaultRecipeID: UUID?
+}
+
 /// The recipes, in a JSON file the user can open.
 ///
 /// `~/Library/Application Support/SpektraLab/export-recipes.json`. Written
@@ -719,7 +736,64 @@ final class ExportRecipeStore {
     /// Nil when everything is fine.
     private(set) var problem: String?
 
-    var selectedID: UUID?
+    private var activeSelectionID: UUID?
+    private var selectionPreferences: ExportSelectionPreferences
+    private(set) var selectionProblem: String?
+
+    var selectedID: UUID? {
+        get { activeSelectionID }
+        set {
+            guard let id = validID(newValue) else { return }
+            activeSelectionID = id
+            rememberSelection(id)
+        }
+    }
+
+    var defaultRecipeID: UUID? {
+        get { validID(selectionPreferences.defaultRecipeID) }
+        set {
+            guard newValue == nil || validID(newValue) != nil else { return }
+            guard selectionPreferences.defaultRecipeID != newValue else { return }
+            selectionPreferences.defaultRecipeID = newValue
+            saveSelection()
+        }
+    }
+
+    var defaultRecipe: ExportRecipe? {
+        recipes.first { $0.id == defaultRecipeID }
+    }
+
+    var openingBehavior: ExportOpeningBehavior {
+        get { defaultRecipeID == nil ? .lastUsed : .fixedDefault }
+        set {
+            switch newValue {
+            case .lastUsed: defaultRecipeID = nil
+            case .fixedDefault:
+                if defaultRecipeID == nil { setCurrentAsDefault() }
+            }
+        }
+    }
+
+    func setCurrentAsDefault() { defaultRecipeID = selected?.id }
+
+    /// Call when the export page opens, including a retained SwiftUI view.
+    /// Restoring the pinned default is not a new manual choice, so it must
+    /// not replace the last choice used by the other opening mode.
+    func restoreSelection() {
+        activeSelectionID = defaultRecipeID
+            ?? validID(selectionPreferences.lastSelectedID) ?? recipes.first?.id
+    }
+
+    private func validID(_ id: UUID?) -> UUID? {
+        guard let id, recipes.contains(where: { $0.id == id }) else { return nil }
+        return id
+    }
+
+    private func rememberSelection(_ id: UUID) {
+        guard selectionPreferences.lastSelectedID != id else { return }
+        selectionPreferences.lastSelectedID = id
+        saveSelection()
+    }
 
     var selected: ExportRecipe? {
         get { recipes.first { $0.id == selectedID } ?? recipes.first }
@@ -727,6 +801,7 @@ final class ExportRecipeStore {
             guard let newValue, let i = recipes.firstIndex(where: { $0.id == newValue.id }) else { return }
             recipes[i] = newValue
             save()
+            if selected?.id == newValue.id { rememberSelection(newValue.id) }
         }
     }
 
@@ -740,25 +815,53 @@ final class ExportRecipeStore {
     /// at a temporary directory — a test that exercised the real path would
     /// overwrite the user's own recipes, which is not a thing a test may do.
     let url: URL
+    /// Derived from the injectable recipe URL by default, so existing tests
+    /// that own a temporary recipe file also own their selection preferences.
+    let selectionURL: URL
 
-    init(url: URL = ExportRecipeStore.url) {
+    init(url: URL = ExportRecipeStore.url, selectionURL: URL? = nil) {
         self.url = url
+        self.selectionURL = selectionURL ?? url.appendingPathExtension("selection.json")
+        self.selectionPreferences = ExportSelectionPreferences()
         let loaded = Self.load(from: url)
         recipes = loaded.recipes
         problem = loaded.problem
-        selectedID = recipes.first?.id
+        if FileManager.default.fileExists(atPath: self.selectionURL.path) {
+            do {
+                selectionPreferences = try JSONDecoder().decode(ExportSelectionPreferences.self,
+                    from: Data(contentsOf: self.selectionURL))
+            } catch {
+                selectionProblem = "Export selection preferences could not be read: \(error.localizedDescription)"
+            }
+        }
+        restoreSelection()
         // Seed the file on first run, so "set in some separated json" is true
         // from the first launch rather than after the first edit.
-        if loaded.problem == nil, !FileManager.default.fileExists(atPath: url.path) { save() }
+        if loaded.problem == nil,
+           loaded.needsSave || !FileManager.default.fileExists(atPath: url.path) {
+            // Adding stable ids to an old document is the only new startup
+            // write. Keep the original intact before that migration, including
+            // fields a newer/older recipe decoder may not understand.
+            if FileManager.default.fileExists(atPath: url.path) {
+                do {
+                    let backup = url.appendingPathExtension("before-selection-\(UUID().uuidString).bak")
+                    try FileManager.default.copyItem(at: url, to: backup)
+                } catch {
+                    problem = "Could not back up \(url.lastPathComponent) before adding stable recipe identities: \(error.localizedDescription)"
+                    return
+                }
+            }
+            save()
+        }
     }
 
-    private static func load(from url: URL) -> (recipes: [ExportRecipe], problem: String?) {
+    private static func load(from url: URL) -> (recipes: [ExportRecipe], problem: String?, needsSave: Bool) {
         guard FileManager.default.fileExists(atPath: url.path) else {
-            return (ExportRecipe.defaults, nil)
+            return (ExportRecipe.defaults, nil, true)
         }
         do {
             let data = try Data(contentsOf: url)
-            let decoded = try JSONDecoder().decode([ExportRecipe].self, from: data).map { r in
+            var decoded = try JSONDecoder().decode([ExportRecipe].self, from: data).map { r in
                 var r = r
                 if r.format == .di, ExportRecipe.legacyDigitalIntermediateNames.contains(r.name) {
                     r.name = ExportRecipe.digitalIntermediateName
@@ -767,10 +870,39 @@ final class ExportRecipeStore {
             }
             // An empty array is a file that says "no recipes", which is not a
             // state the UI can do anything with.
-            return decoded.isEmpty ? (ExportRecipe.defaults, nil) : (decoded, nil)
+            if decoded.isEmpty { return (ExportRecipe.defaults, nil, true) }
+            // The lenient decoder accepts old records with no UUID. Persist
+            // the generated identities once; otherwise each new process
+            // would generate different ids and forget that recipe again.
+            let records = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]]
+            var needsSave = records?.contains { record in
+                (record["id"] as? String).flatMap(UUID.init(uuidString:)) == nil
+            } ?? false
+            var seen: Set<UUID> = []
+            for index in decoded.indices {
+                if !seen.insert(decoded[index].id).inserted {
+                    decoded[index].id = UUID()
+                    seen.insert(decoded[index].id)
+                    needsSave = true
+                }
+            }
+            return (decoded, nil, needsSave)
         } catch {
             return (ExportRecipe.defaults,
-                    "\(url.lastPathComponent) could not be read (\(error.localizedDescription)). Using the built-in recipes; your file has not been changed.")
+                    "\(url.lastPathComponent) could not be read (\(error.localizedDescription)). Using the built-in recipes; your file has not been changed.", false)
+        }
+    }
+
+    private func saveSelection() {
+        do {
+            try FileManager.default.createDirectory(at: selectionURL.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(selectionPreferences).write(to: selectionURL, options: .atomic)
+            selectionProblem = nil
+        } catch {
+            selectionProblem = "Export selection preferences could not be saved: \(error.localizedDescription)"
         }
     }
 
@@ -810,7 +942,12 @@ final class ExportRecipeStore {
     func remove(_ r: ExportRecipe) {
         guard recipes.count > 1, let i = recipes.firstIndex(where: { $0.id == r.id }) else { return }
         recipes.remove(at: i)
-        if selectedID == r.id { selectedID = recipes.first?.id }
+        if selectionPreferences.defaultRecipeID == r.id { selectionPreferences.defaultRecipeID = nil }
+        let removedLastChoice = selectionPreferences.lastSelectedID == r.id
+        if removedLastChoice { selectionPreferences.lastSelectedID = nil }
+        if activeSelectionID == r.id { restoreSelection() }
+        if removedLastChoice { selectionPreferences.lastSelectedID = activeSelectionID }
         save()
+        saveSelection()
     }
 }

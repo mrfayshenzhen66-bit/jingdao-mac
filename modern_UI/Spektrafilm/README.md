@@ -211,7 +211,7 @@ top-left origin. `RendererTests.testOffscreenRenderOrientation` and
 - Switching frames shows the frame's last print instantly (or its decode
   preview), flagged **preview** until the service catches up.
 - `Service/RenderScheduler.swift` keeps *sent* vs *wanted* params and one
-  loop: debounce (40 ms print / 220 ms shoot), send one delta for the whole
+  loop: debounce (16 ms print / 30 ms shoot), send one delta for the whole
   difference, apply the result only if the generation still matches. A slider
   drag produces a handful of reprints, never one per tick, and a stale reply
   can never overwrite a newer frame.
