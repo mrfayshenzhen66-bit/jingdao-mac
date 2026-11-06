@@ -1,6 +1,6 @@
 # SpektraLab™
 
-**English** · [简体中文](README.zh-CN.md) · [spektralab.app](https://spektralab.app)
+**English** · [简体中文](README.SpektraLab.zh-CN.md) · [spektralab.app](https://spektralab.app)
 
 A film and print simulator for macOS. Open a RAW, pick a film and a paper,
 and get a physically modelled print — grain, halation, couplers, the enlarger's
