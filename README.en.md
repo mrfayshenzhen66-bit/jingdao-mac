@@ -7,6 +7,10 @@ This is not an official SpektraLab release and is not endorsed by the upstream a
 
 > The name comes from the *Mozi* (Canon II): “景到，在午有端” — light passing through a small aperture forms an inverted image on the other side. The icon is a pinhole camera.
 
+## Product overview
+
+[![Jingdao · Film Lab for Mac](screenshots/jingdao-21.1/overview.png)](screenshots/jingdao-21.1/overview.png)
+
 ## Changes since SpektraLab 1.3.5
 
 | Version | Changes |
@@ -21,6 +25,41 @@ This is not an official SpektraLab release and is not endorsed by the upstream a
 Also: film/paper combination presets, remembered export recipes, a transparent PNG signature layer, panel ordering, and Chinese menus.
 
 The interface follows the system language (English or Simplified Chinese).
+
+## Interface and examples
+
+Jingdao 21.1, shown with the Simplified Chinese interface. Click an image to view it at full size.
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <a href="screenshots/jingdao-21.1/lanterns.png"><img src="screenshots/jingdao-21.1/lanterns.png" alt="Lanterns · Curves, colour wheels and HSL" width="100%"></a><br>
+      <sub>Lanterns · Curves, colour wheels and HSL</sub>
+    </td>
+    <td width="50%" align="center">
+      <a href="screenshots/jingdao-21.1/architecture.png"><img src="screenshots/jingdao-21.1/architecture.png" alt="Architecture · Light and shadow" width="100%"></a><br>
+      <sub>Architecture · Light and shadow</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <a href="screenshots/jingdao-21.1/portrait.png"><img src="screenshots/jingdao-21.1/portrait.png" alt="Pet portrait · Film exposure and grain" width="100%"></a><br>
+      <sub>Pet portrait · Film exposure and grain</sub>
+    </td>
+    <td width="50%" align="center">
+      <a href="screenshots/jingdao-21.1/landscape.png"><img src="screenshots/jingdao-21.1/landscape.png" alt="Landscape · Colour and tone" width="100%"></a><br>
+      <sub>Landscape · Colour and tone</sub>
+    </td>
+  </tr>
+</table>
+
+### About Jingdao
+
+Version information, the unofficial-build notice, and upstream credits and licences.
+
+<p align="center">
+  <a href="screenshots/jingdao-21.1/about.png"><img src="screenshots/jingdao-21.1/about.png" alt="About Jingdao" width="460"></a>
+</p>
 
 ## Getting it and building
 

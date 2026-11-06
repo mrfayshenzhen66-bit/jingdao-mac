@@ -7,6 +7,10 @@
 
 > 名字出自《墨子·经下》：“景到，在午有端，与景长，说在端。”——光线穿过小孔，在另一侧成倒立的像。图标画的就是小孔成像。
 
+## 产品概览
+
+[![Jingdao · Film Lab for Mac](screenshots/jingdao-21.1/overview.png)](screenshots/jingdao-21.1/overview.png)
+
 ## 相比 SpektraLab 1.3.5 的改动
 
 | 版本 | 内容 |
@@ -19,6 +23,41 @@
 | 21.1 | 显影后新增 **HSL**（红橙黄绿青蓝紫洋红 × 色相/饱和度/明度）；“色彩平衡”改名“色彩平衡 · 色轮” |
 
 另有：胶片与相纸组合预设、导出配方记忆、透明 PNG 签名图层、栏目排序管理、中文菜单等。
+
+## 界面与效果
+
+景到 21.1 中文界面实拍。点击图片可查看原图。
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <a href="screenshots/jingdao-21.1/lanterns.png"><img src="screenshots/jingdao-21.1/lanterns.png" alt="灯笼夜景 · 曲线、色轮与 HSL" width="100%"></a><br>
+      <sub>灯笼夜景 · 曲线、色轮与 HSL</sub>
+    </td>
+    <td width="50%" align="center">
+      <a href="screenshots/jingdao-21.1/architecture.png"><img src="screenshots/jingdao-21.1/architecture.png" alt="建筑光影 · 明暗层次" width="100%"></a><br>
+      <sub>建筑光影 · 明暗层次</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <a href="screenshots/jingdao-21.1/portrait.png"><img src="screenshots/jingdao-21.1/portrait.png" alt="宠物肖像 · 胶片曝光与颗粒" width="100%"></a><br>
+      <sub>宠物肖像 · 胶片曝光与颗粒</sub>
+    </td>
+    <td width="50%" align="center">
+      <a href="screenshots/jingdao-21.1/landscape.png"><img src="screenshots/jingdao-21.1/landscape.png" alt="湖山风景 · 色彩与影调" width="100%"></a><br>
+      <sub>湖山风景 · 色彩与影调</sub>
+    </td>
+  </tr>
+</table>
+
+### 关于景到
+
+版本信息、非官方修改版说明，以及上游项目的致谢与许可。
+
+<p align="center">
+  <a href="screenshots/jingdao-21.1/about.png"><img src="screenshots/jingdao-21.1/about.png" alt="关于景到" width="460"></a>
+</p>
 
 ## 获取与构建
 
