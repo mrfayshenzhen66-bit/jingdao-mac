@@ -1,6 +1,6 @@
 # 景到 Jingdao
 
-[简体中文](README.md) · **English**
+[简体中文](README.md) · **English** · [日本語](README.ja.md) · [한국어](README.ko.md)
 
 **An unofficial modified version of the open-source [SpektraLab](https://github.com/JamesQiu2005/SpektraLab) 1.3.5** — a film and print simulator for macOS.
 This is not an official SpektraLab release and is not endorsed by the upstream author. The original documentation is in [README.SpektraLab.md](README.SpektraLab.md) (English) and [README.SpektraLab.zh-CN.md](README.SpektraLab.zh-CN.md) (Chinese).

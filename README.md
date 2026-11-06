@@ -1,6 +1,6 @@
 # 景到 Jingdao
 
-**简体中文** · [English](README.en.md)
+**简体中文** · [English](README.en.md) · [日本語](README.ja.md) · [한국어](README.ko.md)
 
 **基于开源 [SpektraLab](https://github.com/JamesQiu2005/SpektraLab) 1.3.5 的非官方修改版**，macOS 胶片与相纸冲印模拟器。
 本项目不是 SpektraLab 官方发行，也未获得上游作者认可。上游原始说明见 [README.SpektraLab.zh-CN.md](README.SpektraLab.zh-CN.md)（中文）与 [README.SpektraLab.md](README.SpektraLab.md)（English）。
